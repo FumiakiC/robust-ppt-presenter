@@ -1,0 +1,10 @@
+# PowerPoint Temporary Files
+~$*.ppt*
+
+# Windows Thumbnail Cache
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# PowerShell history
+.history.ps1
