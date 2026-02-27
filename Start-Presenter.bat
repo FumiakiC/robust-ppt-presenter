@@ -107,9 +107,35 @@ echo.
 "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0%SCRIPT_NAME%"
 
 REM -----------------------------------------------
-REM End of batch
+REM Cleanup: Remove URLACL and Firewall rule
 REM -----------------------------------------------
 echo.
-echo All processes completed. You can close this window.
+echo ==== Starting Post-processing: Cleaning up system configuration ====
+echo.
+echo [Cleanup] Removing URLACL: %URLACL_URL%
+netsh http delete urlacl url=%URLACL_URL% >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [Cleanup] URLACL successfully removed.
+) else (
+    echo [Cleanup] Warning: Could not remove URLACL [may not have existed].
+)
+echo.
+echo [Cleanup] Removing Firewall rule: %FW_RULE_NAME%
+"%POWERSHELL%" -NoProfile -Command "Remove-NetFirewallRule -DisplayName '%FW_RULE_NAME%' -ErrorAction SilentlyContinue" >nul 2>&1
+
+if %errorlevel% equ 0 (
+    echo [Cleanup] Firewall rule successfully removed.
+) else (
+    echo [Cleanup] Warning: Could not remove Firewall rule [may not have existed].
+)
+echo.
+echo ==== Post-processing completed ====
+echo.
+
+REM -----------------------------------------------
+REM End of batch
+REM -----------------------------------------------
+echo All processes completed. Press any key to close this window...
+pause >nul
 exit /b 0
 ``
