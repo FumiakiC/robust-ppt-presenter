@@ -429,10 +429,13 @@ function Get-UserAction {
                 if (status === 'running' || (status === 'waiting' && checkCount > 2)) {
                     clearInterval(checkInterval);
                     window.location.href = '/';
-                } else if (checkCount++ > maxRetries) {
-                    // タイムアウト時は強制リロード
-                    clearInterval(checkInterval);
-                    window.location.href = '/';
+                } else {
+                    checkCount++;
+                    if (checkCount > maxRetries) {
+                        // タイムアウト時は強制リロード
+                        clearInterval(checkInterval);
+                        window.location.href = '/';
+                    }
                 }
             })
             .catch(e => {
