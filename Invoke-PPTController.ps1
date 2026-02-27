@@ -685,8 +685,7 @@ try {
             Write-Host " >> Opening: $($targetFileItem.Name)" -ForegroundColor Cyan
             $presentation = $pptApp.Presentations.Open($targetFileItem.FullName, $false, $false, $true)
             
-            # スライドショーを開始する前に監視を開始（リスナーを先に起動）
-            # これにより、Web側が即座にステータスを取得できる
+            # PowerPointのファイル読み込み（COMオブジェクト）が完了し、プロセスが安定するのを待機
             Start-Sleep -Milliseconds 100
             $presentation.SlideShowSettings.Run() | Out-Null
             
