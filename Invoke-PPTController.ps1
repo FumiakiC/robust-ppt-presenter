@@ -570,27 +570,9 @@ function Get-UserAction {
                 }
                 
                 # 数字キーでスライド選択（ページオフセットを考慮）
-                if ($k -match "^D[0-9]$") {
-                    # D1, D2, ... D9 形式のキー
-                    $num = [int]$k.Substring(1)
-                    if ($num -ge 1 -and $num -le 9) {
-                        $absoluteIndex = $currentPage * $itemsPerPage + ($num - 1)
-                        
-                        # 全ファイルリストを作成
-                        $allFiles = @()
-                        if ($ActiveFiles) { $allFiles += $ActiveFiles }
-                        if ($FinishedFiles) { $allFiles += $FinishedFiles }
-                        
-                        if ($absoluteIndex -lt $allFiles.Count) {
-                            $resultAction = "Select"
-                            $resultFile = $allFiles[$absoluteIndex].Name
-                            $actionSetTime = Get-Date
-                        }
-                    }
-                }
-                # NumPad の数字キー対応
-                elseif ($k -match "^NUMPAD[0-9]$") {
-                    $num = [int]$k.Replace("NUMPAD", "")
+                if ($k -match "^D([0-9])$" -or $k -match "^NUMPAD([0-9])$") {
+                    # D1-D9 および NUMPAD1-NUMPAD9 形式のキー
+                    $num = [int]$matches[1]
                     if ($num -ge 1 -and $num -le 9) {
                         $absoluteIndex = $currentPage * $itemsPerPage + ($num - 1)
                         
