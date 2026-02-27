@@ -15,20 +15,50 @@ $ErrorActionPreference = 'Stop'
 # ------------------------------------------------------------
 # 1. ユーティリティ関数
 # ------------------------------------------------------------
-function Get-LocalIPAddress {
+function Get-LocalActiveIPs {
     try {
-        $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { 
-            $_.InterfaceAlias -notlike "*Loopback*" -and $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "0.0.0.0"
-        } | Select-Object -ExpandProperty IPAddress -First 1)
-        
-        if (-not $ip) {
-            $ip = ([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) | 
-                   Where-Object { $_.AddressFamily -eq 'InterNetwork' } | 
-                   Select-Object -ExpandProperty IPAddressToString -First 1)
+        # Get all adapters that are up and not virtual
+        $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+            $_.Status -eq "Up" -and
+            -not $_.Virtual -and
+            $_.InterfaceAlias -notlike "*Loopback*" -and
+            $_.InterfaceAlias -notlike "*vEthernet*" -and
+            $_.InterfaceAlias -notlike "*VMware*" -and
+            $_.InterfaceAlias -notlike "*VirtualBox*" -and
+            $_.InterfaceAlias -notlike "*Tailscale*" -and
+            $_.InterfaceAlias -notlike "*ZeroTier*" -and
+            $_.InterfaceDescription -notlike "*Loopback*" -and
+            $_.InterfaceDescription -notlike "*vEthernet*" -and
+            $_.InterfaceDescription -notlike "*VMware*" -and
+            $_.InterfaceDescription -notlike "*VirtualBox*" -and
+            $_.InterfaceDescription -notlike "*Tailscale*" -and
+            $_.InterfaceDescription -notlike "*ZeroTier*"
         }
-        return $ip
+        
+        # Get IP addresses for each adapter
+        $results = @()
+        foreach ($adapter in $adapters) {
+            $ipAddresses = Get-NetIPAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+                $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "0.0.0.0"
+            }
+            
+            foreach ($ipAddr in $ipAddresses) {
+                $results += @{
+                    InterfaceAlias = $adapter.InterfaceAlias
+                    IPAddress = $ipAddr.IPAddress
+                }
+            }
+        }
+        
+        # Fallback if no valid IPs found
+        if ($results.Count -eq 0) {
+            $results = @(@{ InterfaceAlias = "Local"; IPAddress = "localhost" })
+        }
+        
+        return $results
     } catch {
-        return "localhost"
+        # Fallback on error
+        return @(@{ InterfaceAlias = "Local"; IPAddress = "localhost" })
     }
 }
 
@@ -250,12 +280,14 @@ function Get-UserAction {
     # 画面表示関数
     function Show-ConsolePage {
         Clear-Host
-        $ip = Get-LocalIPAddress
+        $adapters = Get-LocalActiveIPs
         $line = "=" * 70
         Write-Host $line -ForegroundColor Cyan
-        Write-Host "   Presentation Controller V7.3" -ForegroundColor White -BackgroundColor DarkCyan
+        Write-Host "   Presentation Controller V7.4" -ForegroundColor White -BackgroundColor DarkCyan
         Write-Host $line -ForegroundColor Cyan
-        Write-Host " [Web URL]  http://$($ip):$($WebPort)/" -ForegroundColor Yellow
+        foreach ($adapter in $adapters) {
+            Write-Host " [Web URL - $($adapter.InterfaceAlias)] http://$($adapter.IPAddress):$($WebPort)/" -ForegroundColor Yellow
+        }
         Write-Host " [Status]   $Mode" -ForegroundColor White
         Write-Host ""
         Write-Host " --- PC Control Menu ---" -ForegroundColor Gray
