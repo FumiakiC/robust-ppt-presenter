@@ -1,6 +1,10 @@
 # PowerPoint Temporary Files
 ~$*.ppt*
 
+# PowerPoint files
+*.ppt
+*.pptx
+
 # Windows Thumbnail Cache
 Thumbs.db
 ehthumbs.db
@@ -8,3 +12,6 @@ Desktop.ini
 
 # PowerShell history
 .history.ps1
+
+# Build/output folders
+finish/

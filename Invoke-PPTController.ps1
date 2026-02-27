@@ -242,27 +242,94 @@ function Get-UserAction {
     $listener.Prefixes.Add("http://+:$WebPort/")
     try { $listener.Start() } catch { Write-Error "ポート $WebPort 使用不可"; exit }
 
-    # 画面表示
-    Clear-Host
-    $ip = Get-LocalIPAddress
-    $line = "=" * 70
-    Write-Host $line -ForegroundColor Cyan
-    Write-Host "   Presentation Controller V7.3" -ForegroundColor White -BackgroundColor DarkCyan
-    Write-Host $line -ForegroundColor Cyan
-    Write-Host " [Web URL]  http://$($ip):$($WebPort)/" -ForegroundColor Yellow
-    Write-Host " [Status]   $Mode" -ForegroundColor White
-    Write-Host ""
-    Write-Host " --- PC Control Menu ---" -ForegroundColor Gray
-    if ($Mode -eq "Lobby") {
-        Write-Host " [Enter] Start" -ForegroundColor Green
-        Write-Host " [Q]     Exit System" -ForegroundColor Red
-    } else {
-        Write-Host " [Enter] Next" -ForegroundColor Green
-        Write-Host " [R]     Retry" -ForegroundColor Yellow
-        Write-Host " [L]     Back to Lobby" -ForegroundColor Cyan
-        Write-Host " [Q]     Exit System" -ForegroundColor Red
+    # ページング用変数
+    $currentPage = 0
+    $itemsPerPage = 9
+    $needsRedraw = $true
+
+    # 画面表示関数
+    function Show-ConsolePage {
+        Clear-Host
+        $ip = Get-LocalIPAddress
+        $line = "=" * 70
+        Write-Host $line -ForegroundColor Cyan
+        Write-Host "   Presentation Controller V7.3" -ForegroundColor White -BackgroundColor DarkCyan
+        Write-Host $line -ForegroundColor Cyan
+        Write-Host " [Web URL]  http://$($ip):$($WebPort)/" -ForegroundColor Yellow
+        Write-Host " [Status]   $Mode" -ForegroundColor White
+        Write-Host ""
+        Write-Host " --- PC Control Menu ---" -ForegroundColor Gray
+        if ($Mode -eq "Lobby") {
+            Write-Host " [Enter] Start" -ForegroundColor Green
+            Write-Host " [1-9]   Select Slide by Number" -ForegroundColor Cyan
+            
+            # ページング情報の表示
+            $totalActiveFiles = if ($ActiveFiles) { $ActiveFiles.Count } else { 0 }
+            $totalFinishedFiles = if ($FinishedFiles) { $FinishedFiles.Count } else { 0 }
+            $totalFiles = $totalActiveFiles + $totalFinishedFiles
+            $totalPages = [Math]::Ceiling($totalFiles / $itemsPerPage)
+            
+            if ($totalPages -gt 1) {
+                Write-Host " [N]     Next Page  [P] Previous Page" -ForegroundColor Magenta
+            }
+            Write-Host " [Q]     Exit System" -ForegroundColor Red
+            Write-Host ""
+            
+            if ($totalPages -gt 1) {
+                Write-Host " --- Available Slides (Page $($currentPage + 1)/$totalPages) ---" -ForegroundColor Gray
+            } else {
+                Write-Host " --- Available Slides ---" -ForegroundColor Gray
+            }
+            
+            # ページング計算
+            $startIdx = $currentPage * $itemsPerPage
+            $endIdx = $startIdx + $itemsPerPage - 1
+            
+            # Pending スライド表示
+            $displayIndex = 1
+            $currentFileIndex = 0
+            $activeSectionShown = $false
+            
+            if ($ActiveFiles -and $ActiveFiles.Count -gt 0) {
+                foreach ($f in $ActiveFiles) {
+                    if ($currentFileIndex -ge $startIdx -and $currentFileIndex -le $endIdx) {
+                        if (-not $activeSectionShown) {
+                            Write-Host " [Pending]" -ForegroundColor Green
+                            $activeSectionShown = $true
+                        }
+                        Write-Host "  [$displayIndex] $($f.Name)" -ForegroundColor White
+                        $displayIndex++
+                    }
+                    $currentFileIndex++
+                }
+            }
+            
+            # Completed スライド表示
+            $finishedSectionShown = $false
+            if ($FinishedFiles -and $FinishedFiles.Count -gt 0) {
+                foreach ($f in $FinishedFiles) {
+                    if ($currentFileIndex -ge $startIdx -and $currentFileIndex -le $endIdx) {
+                        if (-not $finishedSectionShown) {
+                            Write-Host " [Completed]" -ForegroundColor DarkGray
+                            $finishedSectionShown = $true
+                        }
+                        Write-Host "  [$displayIndex] $($f.Name)" -ForegroundColor DarkGray
+                        $displayIndex++
+                    }
+                    $currentFileIndex++
+                }
+            }
+        } else {
+            Write-Host " [Enter] Next" -ForegroundColor Green
+            Write-Host " [R]     Retry" -ForegroundColor Yellow
+            Write-Host " [L]     Back to Lobby" -ForegroundColor Cyan
+            Write-Host " [Q]     Exit System" -ForegroundColor Red
+        }
+        Write-Host $line -ForegroundColor Cyan
     }
-    Write-Host $line -ForegroundColor Cyan
+    
+    # 初回表示
+    Show-ConsolePage
 
     # HTML生成
     $head = Get-HtmlHeader -Title "Controller" -BgColor $(if($Mode -eq 'Lobby'){"#1a1a1a"}else{"#000000"})
@@ -306,16 +373,41 @@ function Get-UserAction {
     # ポーリング用スクリプト
     $pollingScript = @"
     <script>
-        setInterval(function(){
+        // ポーリングタイマーを変数に格納して制御可能にする
+        var pollingTimer = setInterval(function(){
             fetch('/status?t=' + Date.now())
             .then(r => r.text())
             .then(status => {
                 if (status === 'stopping') {
+                    clearInterval(pollingTimer);
                     window.location.href = '/exit';
+                } else if (status === 'changing' || status === 'starting' || status === 'running') {
+                    // プレゼンテーション開始や状態変化時にリロード
+                    // running も検知対象に追加（changing を取り逃がした場合の対処）
+                    clearInterval(pollingTimer);
+                    window.location.href = '/';
                 }
             })
             .catch(e => console.log('Waiting connection...'));
-        }, 1000);
+        }, 300);  // 300msごとにチェック（800ms待機時間内に確実に検知）
+        
+        // フォーム送信時にポーリングを停止して画面遷移の競合を防止
+        document.addEventListener('DOMContentLoaded', function() {
+            var forms = document.querySelectorAll('form');
+            forms.forEach(function(form) {
+                form.addEventListener('submit', function() {
+                    clearInterval(pollingTimer);
+                });
+            });
+            
+            // ボタンクリック時も念のため停止
+            var buttons = document.querySelectorAll('.btn');
+            buttons.forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    clearInterval(pollingTimer);
+                });
+            });
+        });
     </script>
 "@
 
@@ -324,7 +416,39 @@ function Get-UserAction {
     # --- 画面状態のHTML ---
     $processingHtml = $head + @"
     <div style="margin-top:50px;"><div class="loader"></div><h2>Processing...</h2><p>Screen will refresh</p></div>
-    <script>setTimeout(function(){ window.location.href='/'; }, 1000);</script>
+    <script>
+        var checkCount = 0;
+        var maxRetries = 60; // 最大30秒待機（500ms * 60）
+        var errorCount = 0;
+        var maxErrors = 40; // 接続エラー時は最大20秒待機（500ms * 40）
+        var checkInterval = setInterval(function(){
+            fetch('/status?t=' + Date.now())
+            .then(r => r.text())
+            .then(status => {
+                // running（発表中）またはwaiting（待機中）になったらリロード
+                if (status === 'running' || (status === 'waiting' && checkCount > 2)) {
+                    clearInterval(checkInterval);
+                    window.location.href = '/';
+                } else {
+                    checkCount++;
+                    if (checkCount > maxRetries) {
+                        // タイムアウト時は強制リロード
+                        clearInterval(checkInterval);
+                        window.location.href = '/';
+                    }
+                }
+            })
+            .catch(e => {
+                // 接続エラー時、プレゼンテーション起動を待って再試行
+                checkCount++;
+                errorCount++;
+                if (errorCount > maxErrors || checkCount > maxRetries) {
+                    clearInterval(checkInterval);
+                    window.location.href = '/';
+                }
+            });
+        }, 500);
+    </script>
 </body></html>
 "@
     
@@ -340,6 +464,7 @@ function Get-UserAction {
 
     $resultAction = $null
     $resultFile = $null
+    $actionSetTime = $null  # アクション設定時刻を記録
     
     # シャットダウン制御用
     $shuttingDown = $false
@@ -359,7 +484,14 @@ function Get-UserAction {
             $resHtml = $mainHtml
             
             if ($url -eq "/status") {
-                $statusText = if ($shuttingDown) { "stopping" } else { "waiting" }
+                # 状態を返す：stopping（終了中）/ changing（状態変更中）/ waiting（待機中）
+                $statusText = if ($shuttingDown) { 
+                    "stopping" 
+                } elseif ($resultAction -ne $null) { 
+                    "changing" 
+                } else { 
+                    "waiting" 
+                }
                 Send-HttpResponse -Response $res -Content $statusText -ContentType "text/plain"
                 
                 $contextTask = $listener.GetContextAsync()
@@ -372,18 +504,19 @@ function Get-UserAction {
                     $body = $r.ReadToEnd(); $r.Close()
                 }
                 switch ($url) {
-                    "/start"  { $resultAction = "Start"; $resHtml = $processingHtml }
-                    "/next"   { $resultAction = "Next";  $resHtml = $processingHtml }
-                    "/retry"  { $resultAction = "Retry"; $resHtml = $processingHtml }
-                    "/lobby"  { $resultAction = "Lobby"; $resHtml = $processingHtml }
+                    "/start"  { $resultAction = "Start"; $actionSetTime = Get-Date; $resHtml = $processingHtml }
+                    "/next"   { $resultAction = "Next";  $actionSetTime = Get-Date; $resHtml = $processingHtml }
+                    "/retry"  { $resultAction = "Retry"; $actionSetTime = Get-Date; $resHtml = $processingHtml }
+                    "/lobby"  { $resultAction = "Lobby"; $actionSetTime = Get-Date; $resHtml = $processingHtml }
                     "/exit"   { 
                         $resultAction = "Exit"
+                        $actionSetTime = Get-Date
                         $shuttingDown = $true 
                         $resHtml = $exitHtml 
                     }
                     "/select" {
                         if ([System.Web.HttpUtility]::UrlDecode($body) -match "filename=(.*)") { 
-                            $resultAction = "Select"; $resultFile = $matches[1] 
+                            $resultAction = "Select"; $resultFile = $matches[1]; $actionSetTime = Get-Date
                         }
                         $resHtml = $processingHtml
                     }
@@ -416,17 +549,61 @@ function Get-UserAction {
             }
 
             if ($Mode -eq "Lobby") {
-                if ($k -eq "ENTER" -or $k -eq "S") { $resultAction = "Start" }
+                if ($k -eq "ENTER" -or $k -eq "S") { $resultAction = "Start"; $actionSetTime = Get-Date }
+                
+                # ページング操作
+                $totalActiveFiles = if ($ActiveFiles) { $ActiveFiles.Count } else { 0 }
+                $totalFinishedFiles = if ($FinishedFiles) { $FinishedFiles.Count } else { 0 }
+                $totalFiles = $totalActiveFiles + $totalFinishedFiles
+                $totalPages = [Math]::Ceiling($totalFiles / $itemsPerPage)
+                
+                if ($k -eq "N") {
+                    # 次のページ
+                    if ($currentPage -lt ($totalPages - 1)) {
+                        $currentPage++
+                        Show-ConsolePage
+                    }
+                }
+                elseif ($k -eq "P") {
+                    # 前のページ
+                    if ($currentPage -gt 0) {
+                        $currentPage--
+                        Show-ConsolePage
+                    }
+                }
+                
+                # 数字キーでスライド選択（ページオフセットを考慮）
+                if ($k -match "^D([0-9])$" -or $k -match "^NUMPAD([0-9])$") {
+                    # D1-D9 および NUMPAD1-NUMPAD9 形式のキー
+                    $num = [int]$matches[1]
+                    if ($num -ge 1 -and $num -le 9) {
+                        $absoluteIndex = $currentPage * $itemsPerPage + ($num - 1)
+                        
+                        # 全ファイルリストを作成
+                        $allFiles = @()
+                        if ($ActiveFiles) { $allFiles += $ActiveFiles }
+                        if ($FinishedFiles) { $allFiles += $FinishedFiles }
+                        
+                        if ($absoluteIndex -lt $allFiles.Count) {
+                            $resultAction = "Select"
+                            $resultFile = $allFiles[$absoluteIndex].Name
+                            $actionSetTime = Get-Date
+                        }
+                    }
+                }
             } else {
-                if ($k -eq "ENTER" -or $k -eq "N") { $resultAction = "Next" }
-                if ($k -eq "R") { $resultAction = "Retry" }
-                if ($k -eq "L" -or $k -eq "BACKSPACE") { $resultAction = "Lobby" }
+                if ($k -eq "ENTER" -or $k -eq "N") { $resultAction = "Next"; $actionSetTime = Get-Date }
+                if ($k -eq "R") { $resultAction = "Retry"; $actionSetTime = Get-Date }
+                if ($k -eq "L" -or $k -eq "BACKSPACE") { $resultAction = "Lobby"; $actionSetTime = Get-Date }
             }
         }
 
         # --- 終了判定 ---
         if ($resultAction -ne $null -and $resultAction -ne "Exit") {
-            break
+            # Web側が状態変化を検知できるよう、800ms待機してからbreak
+            if ($actionSetTime -and ((Get-Date) - $actionSetTime).TotalMilliseconds -gt 800) {
+                break
+            }
         }
         if ($shuttingDown -and $shutdownDeadline) {
             if ((Get-Date) -gt $shutdownDeadline) {
@@ -507,6 +684,9 @@ try {
         try {
             Write-Host " >> Opening: $($targetFileItem.Name)" -ForegroundColor Cyan
             $presentation = $pptApp.Presentations.Open($targetFileItem.FullName, $false, $false, $true)
+            
+            # PowerPointのファイル読み込み（COMオブジェクト）が完了し、プロセスが安定するのを待機
+            Start-Sleep -Milliseconds 100
             $presentation.SlideShowSettings.Run() | Out-Null
             
             # 発表中の監視
