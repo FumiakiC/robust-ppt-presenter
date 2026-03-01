@@ -12,9 +12,13 @@ param(
 # エラー発生時に停止する設定ですが、送信エラーは個別にcatchして無視します
 $ErrorActionPreference = 'Stop'
 
+# アセンブリの読み込み
+Add-Type -AssemblyName System.Web
+
 # ============================================================================== 
 # コンソールウィンドウ制御（誤操作防止）
 # ============================================================================== 
+#region ConsoleWindow API
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -43,16 +47,19 @@ public class ConsoleWindow {
     }
 }
 "@
+#endregion
 
 # ==============================================================================
 # セキュリティ：ワンタイムPIN認証
 # ==============================================================================
 $script:AuthPin = Get-Random -Minimum 100000 -Maximum 999999
 $script:SessionToken = [guid]::NewGuid().ToString('N')
+$script:LastAuthFailedTime = [DateTime]::MinValue
 
 # ============================================================================== 
 # HTML/CSS/JSテンプレート集約
 # ============================================================================== 
+#region HTML/CSS/JS Templates
 $script:HtmlTemplates = @{
     # 共通HTMLヘッダー + CSS (パラメータ: {0}=Title, {1}=BgColor)
     HtmlHeader = @"
@@ -153,6 +160,78 @@ $script:HtmlTemplates = @{
         @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
         @keyframes pulse {{ 0% {{ transform: scale(1); opacity: 1; }} 50% {{ transform: scale(1.1); opacity: 0.8; }} 100% {{ transform: scale(1); opacity: 1; }} }}
     </style>
+    <script>
+        window.startPolling = function(expectedStatusArray, redirectUrl, opts) {{
+            opts = opts || {{}};
+            var overlay = document.getElementById('offline-overlay');
+            var defaultDelay = opts.defaultDelay || 1000;
+            var maxDelay = opts.maxDelay || 5000;
+            var backoffMultiplier = opts.backoffMultiplier || 1.5;
+            var maxRetries = opts.maxRetries || 0;
+            var maxErrors = opts.maxErrors || 0;
+            var statusRedirects = opts.statusRedirects || {{}};
+            var currentDelay = defaultDelay;
+            var checkCount = 0;
+            var errorCount = 0;
+            var isPolling = true;
+
+            function pollStatus() {{
+                if (!isPolling) return;
+                var showOverlayTimer = setTimeout(function() {{
+                    if (overlay) overlay.classList.add('active');
+                }}, 3000);
+
+                fetch('/status?t=' + Date.now())
+                .then(function(r) {{
+                    clearTimeout(showOverlayTimer);
+                    if (overlay) overlay.classList.remove('active');
+                    return r.text();
+                }})
+                .then(function(status) {{
+                    currentDelay = defaultDelay;
+                    checkCount++;
+                    if (statusRedirects[status]) {{
+                        isPolling = false;
+                        window.location.href = statusRedirects[status];
+                        return;
+                    }}
+                    if (expectedStatusArray.indexOf(status) === -1) {{
+                        isPolling = false;
+                        window.location.href = redirectUrl;
+                    }} else if (maxRetries > 0 && checkCount > maxRetries) {{
+                        window.location.href = redirectUrl;
+                    }} else {{
+                        setTimeout(pollStatus, currentDelay);
+                    }}
+                }})
+                .catch(function(e) {{
+                    clearTimeout(showOverlayTimer);
+                    if (overlay) overlay.classList.add('active');
+                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
+                    checkCount++;
+                    errorCount++;
+                    if ((maxRetries > 0 && checkCount > maxRetries) || (maxErrors > 0 && errorCount > maxErrors)) {{
+                        window.location.href = redirectUrl;
+                    }} else {{
+                        setTimeout(pollStatus, currentDelay);
+                    }}
+                }});
+            }}
+
+            var forms = document.querySelectorAll('form');
+            forms.forEach(function(form) {{
+                form.addEventListener('submit', function(e) {{
+                    if (overlay && overlay.classList.contains('active')) {{
+                        e.preventDefault();
+                        return;
+                    }}
+                    isPolling = false;
+                }});
+            }});
+
+            pollStatus();
+        }};
+    </script>
 </head>
 <body>
     <div id="offline-overlay">
@@ -176,42 +255,7 @@ $script:HtmlTemplates = @{
     </form>
     
     <script>
-        (function() {{
-            var overlay = document.getElementById('offline-overlay');
-            var defaultDelay = 1500;
-            var currentDelay = defaultDelay;
-            var maxDelay = 5000;
-            var backoffMultiplier = 1.5;
-            
-            function pollStatus() {{
-                var showOverlayTimer = setTimeout(function() {{
-                    if (overlay) overlay.classList.add('active');
-                }}, 3000);
-                
-                fetch('/status?t=' + Date.now())
-                .then(response => {{
-                    clearTimeout(showOverlayTimer);
-                    if (overlay) overlay.classList.remove('active');
-                    if (response.ok) {{ return response.text(); }}
-                    throw new Error('Network error');
-                }})
-                .then(text => {{
-                    currentDelay = defaultDelay;
-                    if (text !== 'running') {{
-                        window.location.reload();
-                    }} else {{
-                        setTimeout(pollStatus, currentDelay);
-                    }}
-                }})
-                .catch(error => {{
-                    clearTimeout(showOverlayTimer);
-                    if (overlay) overlay.classList.add('active');
-                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
-                    setTimeout(pollStatus, currentDelay);
-                }});
-            }}
-            pollStatus();
-        }})();
+        window.startPolling(['running'], '/', {{ defaultDelay: 1500 }});
     </script>
 </div></body></html>
 "@
@@ -230,67 +274,13 @@ $script:HtmlTemplates = @{
         <form method="post" action="/next"><button class="btn btn-next" {1}>{2}</button></form>
         <form method="post" action="/retry"><button class="btn btn-retry">Play Again</button></form>
         <form method="post" action="/lobby"><button class="btn btn-list">Back to List</button></form>
-        <form method="post" action="/exit" onsubmit="return confirm('本当にシステムを終了しますか？\n（PC上のプレゼンテーションも強制終了されます）');"><button class="btn btn-exit">Exit All</button></form>
+        <form method="post" action="/exit" onsubmit="return confirm('本当にシステムを終了しますか？\n（PC上のプレゼンテーションも強制終了されます）');"><button class="btn btn-exit">Exit System</button></form>
 "@
 
     # ポーリングスクリプト（Lobby/Dialog用）
     PollingScript = @"
     <script>
-        (function() {{
-            var overlay = document.getElementById('offline-overlay');
-            var defaultDelay = 300;
-            var currentDelay = defaultDelay;
-            var maxDelay = 5000;
-            var backoffMultiplier = 1.5;
-            var isPolling = true;
-            
-            function pollStatus() {{
-                if (!isPolling) return;
-                
-                var showOverlayTimer = setTimeout(function() {{
-                    if (overlay) overlay.classList.add('active');
-                }}, 3000);
-                
-                fetch('/status?t=' + Date.now())
-                .then(r => {{
-                    clearTimeout(showOverlayTimer);
-                    if (overlay) overlay.classList.remove('active');
-                    return r.text();
-                }})
-                .then(status => {{
-                    currentDelay = defaultDelay;
-                    if (status === 'stopping') {{
-                        isPolling = false;
-                        window.location.href = '/exit';
-                    }} else if (status === 'changing' || status === 'starting' || status === 'running') {{
-                        isPolling = false;
-                        window.location.href = '/';
-                    }} else {{
-                        setTimeout(pollStatus, currentDelay);
-                    }}
-                }})
-                .catch(e => {{
-                    clearTimeout(showOverlayTimer);
-                    if (overlay) overlay.classList.add('active');
-                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
-                    setTimeout(pollStatus, currentDelay);
-                }});
-            }}
-            
-            document.addEventListener('DOMContentLoaded', function() {{
-                var forms = document.querySelectorAll('form');
-                forms.forEach(function(form) {{
-                    form.addEventListener('submit', function(e) {{
-                        if (overlay && overlay.classList.contains('active')) {{
-                            e.preventDefault();
-                            return;
-                        }}
-                        isPolling = false;
-                    }});
-                }});
-            }});
-            pollStatus();
-        }})();
+        window.startPolling(['waiting'], '/', { defaultDelay: 300, statusRedirects: { 'stopping': '/exit' } });
     </script>
 "@
 
@@ -298,56 +288,7 @@ $script:HtmlTemplates = @{
     ProcessingView = @"
     <div style="margin-top:50px;"><div class="loader"></div><h2>Processing...</h2><p>Screen will refresh</p></div>
     <script>
-        (function() {{
-            var overlay = document.getElementById('offline-overlay');
-            var defaultDelay = 500;
-            var currentDelay = defaultDelay;
-            var maxDelay = 5000;
-            var backoffMultiplier = 1.5;
-            var checkCount = 0;
-            var maxRetries = 60;
-            var errorCount = 0;
-            var maxErrors = 40;
-            
-            function pollStatus() {{
-                var showOverlayTimer = setTimeout(function() {{
-                    if (overlay) overlay.classList.add('active');
-                }}, 3000);
-                
-                fetch('/status?t=' + Date.now())
-                .then(r => {{
-                    clearTimeout(showOverlayTimer);
-                    if (overlay) overlay.classList.remove('active');
-                    return r.text();
-                }})
-                .then(status => {{
-                    currentDelay = defaultDelay;
-                    if (status === 'running' || (status === 'waiting' && checkCount > 2)) {{
-                        window.location.href = '/';
-                    }} else {{
-                        checkCount++;
-                        if (checkCount > maxRetries) {{
-                            window.location.href = '/';
-                        }} else {{
-                            setTimeout(pollStatus, currentDelay);
-                        }}
-                    }}
-                }})
-                .catch(e => {{
-                    clearTimeout(showOverlayTimer);
-                    if (overlay) overlay.classList.add('active');
-                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
-                    checkCount++;
-                    errorCount++;
-                    if (errorCount > maxErrors || checkCount > maxRetries) {{
-                        window.location.href = '/';
-                    }} else {{
-                        setTimeout(pollStatus, currentDelay);
-                    }}
-                }});
-            }}
-            pollStatus();
-        }})();
+        window.startPolling(['changing', 'starting'], '/', { defaultDelay: 500, maxRetries: 60, maxErrors: 40 });
     </script>
 </body></html>
 "@
@@ -582,6 +523,7 @@ $script:HtmlTemplates = @{
 </html>
 "@
 }
+#endregion
 
 # ------------------------------------------------------------
 # 1. ユーティリティ関数
@@ -638,6 +580,11 @@ function Release-ComObject {
     if ($obj) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($obj) | Out-Null } catch {} }
 }
 
+function Get-PptFiles {
+    param([string]$Path)
+    return Get-ChildItem -Path $Path -File | Where-Object { $_.Extension -in @('.ppt', '.pptx') -and $_.Name -notlike '~$*' } | Sort-Object Name
+}
+
 # 安全にレスポンスを返すためのラッパー関数 (今回の修正の要)
 function Send-HttpResponse {
     param(
@@ -651,6 +598,7 @@ function Send-HttpResponse {
             $buffer = [System.Text.Encoding]::UTF8.GetBytes($Content)
             $Response.ContentType = $ContentType
             $Response.ContentLength64 = $buffer.Length
+            $Response.KeepAlive = $false
             $Response.OutputStream.Write($buffer, 0, $buffer.Length)
         }
     } catch {
@@ -661,44 +609,36 @@ function Send-HttpResponse {
     }
 }
 
-# ------------------------------------------------------------
+# ============================================================================== 
 # 2. 共通HTMLヘッダー・スタイル
-# ------------------------------------------------------------
+# ============================================================================== 
 function Get-HtmlHeader {
     param([string]$Title, [string]$BgColor="#1a1a1a")
     return $script:HtmlTemplates.HtmlHeader -f $Title, $BgColor
 }
 
-# ------------------------------------------------------------
+# ============================================================================== 
 # 3. 発表中の監視関数
-# ------------------------------------------------------------
+# ==============================================================================
 function Watch-RunningPresentation {
     param (
         [object]$PptApp,
-        [object]$TargetFileItem
+        [object]$TargetFileItem,
+        [System.Net.HttpListener]$Listener
     )
-
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://+:$WebPort/")
-    try {
-        $listener.Start()
-    } catch {
-        Write-Warning "Web control is unavailable due to port conflict. Only keyboard operations are available."
-    }
 
     $head = Get-HtmlHeader -Title "Now Playing" -BgColor "#000000"
     $bodyHtml = $script:HtmlTemplates.NowPlayingView -f $TargetFileItem.Name
     $fullHtml = $head + $bodyHtml
 
     $status = "NormalEnd"
-    $contextTask = if ($listener.IsListening) { $listener.GetContextAsync() } else { $null }
 
     try {
         $isFileOpen = $true
         while ($isFileOpen) {
             # 1. Webリクエスト確認
-            if ($contextTask -and $contextTask.AsyncWaitHandle.WaitOne(100)) {
-                $context = $contextTask.Result
+            if ($script:ContextTask -and $script:ContextTask.AsyncWaitHandle.WaitOne(100)) {
+                $context = $script:ContextTask.Result
                 $req = $context.Request
                 $res = $context.Response
                 $path = $req.Url.LocalPath.ToLower()
@@ -708,13 +648,14 @@ function Watch-RunningPresentation {
                     Send-HttpResponse -Response $res -Content "running" -ContentType "text/plain"
                 } 
                 elseif ($path -eq "/stop" -and $req.HttpMethod -eq "POST") {
-                    # 強制終了ボタン
                     $status = "ManualStop"
                     try {
                         $res.StatusCode = 302
+                        $res.KeepAlive = $false
                         $res.AddHeader("Location", "/")
                         $res.Close()
                     } catch {}
+                    $script:ContextTask = $Listener.GetContextAsync()
                     break 
                 } 
                 else {
@@ -723,19 +664,10 @@ function Watch-RunningPresentation {
                 }
                 
                 # 次のリクエスト待ち準備
-                $contextTask = $listener.GetContextAsync()
+                $script:ContextTask = $Listener.GetContextAsync()
             }
 
-            # 2. コンソール入力確認 (Qキー)
-            if ([Console]::KeyAvailable) {
-                $k = [Console]::ReadKey($true).Key.ToString().ToUpper()
-                if ($k -eq "Q" -or $k -eq "ESCAPE") {
-                    $status = "ManualStop"
-                    break
-                }
-            }
-
-            # 3. PowerPointの状態確認
+            # 2. PowerPointの状態確認
             $stillOpen = $false
             try {
                 foreach ($p in $PptApp.Presentations) {
@@ -752,11 +684,7 @@ function Watch-RunningPresentation {
             }
         }
     } finally {
-        if ($listener.IsListening) {
-            $listener.Stop()
-            $listener.Close()
-            Start-Sleep -Milliseconds 200
-        }
+        # HttpListener はメインフロー内で一元管理するため、ここでは Stop/Close しない
     }
 
     return $status
@@ -771,26 +699,27 @@ function Get-UserAction {
         [string]$CurrentFileName = "",
         [array]$ActiveFiles = @(),
         [array]$FinishedFiles = @(),
-        [string]$NextFileName = ""
+        [string]$NextFileName = "",
+        [System.Net.HttpListener]$Listener
     )
-
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://+:$WebPort/")
-    try { $listener.Start() } catch { Write-Error "ポート $WebPort 使用不可"; exit }
 
     # ページング用変数
     $currentPage = 0
     $itemsPerPage = 9
     $needsRedraw = $true
 
+    # ネットワーク情報のキャッシュ
+    $cachedAdapters = Get-LocalActiveIPs
+
     # 画面表示関数
     function Show-ConsolePage {
         Clear-Host
-        $adapters = Get-LocalActiveIPs
-        $line = "=" * 70
-        Write-Host $line -ForegroundColor Cyan
-        Write-Host "   Presentation Controller V7.4" -ForegroundColor White -BackgroundColor DarkCyan
-        Write-Host $line -ForegroundColor Cyan
+        $adapters = $cachedAdapters
+        $line = "━" * 70
+        Write-Host $line -ForegroundColor DarkCyan
+        Write-Host "  [ ppt-orchestrator ] " -ForegroundColor Cyan -NoNewline
+        Write-Host "v7.4 - Presentation Controller" -ForegroundColor DarkGray
+        Write-Host $line -ForegroundColor DarkCyan
         Write-Host ""
         Write-Host "   🔐 PIN CODE: " -NoNewline -ForegroundColor Yellow
         Write-Host $script:AuthPin -ForegroundColor White -BackgroundColor DarkRed
@@ -806,14 +735,15 @@ function Get-UserAction {
             Write-Host " [1-9]   Select Slide by Number" -ForegroundColor Cyan
             
             # ページング情報の表示
-            $totalActiveFiles = if ($ActiveFiles) { $ActiveFiles.Count } else { 0 }
-            $totalFinishedFiles = if ($FinishedFiles) { $FinishedFiles.Count } else { 0 }
+            $totalActiveFiles = @($ActiveFiles).Count
+            $totalFinishedFiles = @($FinishedFiles).Count
             $totalFiles = $totalActiveFiles + $totalFinishedFiles
             $totalPages = [Math]::Ceiling($totalFiles / $itemsPerPage)
             
             if ($totalPages -gt 1) {
                 Write-Host " [N]     Next Page  [P] Previous Page" -ForegroundColor Magenta
             }
+            Write-Host " [U]     Update Network Info" -ForegroundColor DarkYellow
             Write-Host " [Q]     Exit System" -ForegroundColor Red
             Write-Host "   * Note: To close a presentation, please click the 'X' button on the PowerPoint window." -ForegroundColor DarkGray
             Write-Host ""
@@ -833,7 +763,7 @@ function Get-UserAction {
             $currentFileIndex = 0
             $activeSectionShown = $false
             
-            if ($ActiveFiles -and $ActiveFiles.Count -gt 0) {
+            if (@($ActiveFiles).Count -gt 0) {
                 foreach ($f in $ActiveFiles) {
                     if ($currentFileIndex -ge $startIdx -and $currentFileIndex -le $endIdx) {
                         if (-not $activeSectionShown) {
@@ -849,7 +779,7 @@ function Get-UserAction {
             
             # Completed スライド表示
             $finishedSectionShown = $false
-            if ($FinishedFiles -and $FinishedFiles.Count -gt 0) {
+            if (@($FinishedFiles).Count -gt 0) {
                 foreach ($f in $FinishedFiles) {
                     if ($currentFileIndex -ge $startIdx -and $currentFileIndex -le $endIdx) {
                         if (-not $finishedSectionShown) {
@@ -866,15 +796,26 @@ function Get-UserAction {
             Write-Host " [Enter] Next" -ForegroundColor Green
             Write-Host " [R]     Retry" -ForegroundColor Yellow
             Write-Host " [L]     Back to Lobby" -ForegroundColor Cyan
+            Write-Host " [U]     Update Network Info" -ForegroundColor DarkYellow
             Write-Host " [Q]     Exit System" -ForegroundColor Red
             Write-Host "   * Note: To close a presentation, please click the 'X' button on the PowerPoint window." -ForegroundColor DarkGray
-        }
             Write-Host ""
-            Write-Host " ▶ Waiting for command... (Press a key to execute immediately)" -ForegroundColor Green
-            Write-Host $line -ForegroundColor Cyan
+            Write-Host " --- Next Slide ---" -ForegroundColor Gray
+            if ($NextFileName) {
+                Write-Host "  $($NextFileName)" -ForegroundColor White
+            } else {
+                Write-Host "  (No more slides available)" -ForegroundColor DarkGray
+            }
         }
+        Write-Host ""
+        Write-Host $line -ForegroundColor DarkCyan
+        Write-Host "  Copyright (c) 2026 FumiakiC" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host " ▶ Waiting for command... (Press a key to execute immediately)" -ForegroundColor Green
+        Write-Host "" -NoNewline
+    }
     
-        # 初回表示
+    # 初回表示
         Show-ConsolePage
     $head = Get-HtmlHeader -Title "Controller" -BgColor $(if($Mode -eq 'Lobby'){"#1a1a1a"}else{"#000000"})
     
@@ -920,13 +861,14 @@ function Get-UserAction {
     $shutdownDeadline = $null
     $waitingExitConfirm = $false
 
-    $contextTask = $listener.GetContextAsync()
+    # --- 溜まっているキー入力バッファをクリア（プレゼン中の誤操作防止） ---
+    while ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true) }
 
     while ($true) {
         
         # --- Web確認 ---
-        if ($contextTask.AsyncWaitHandle.WaitOne(100)) {
-            $context = $contextTask.Result
+        if ($script:ContextTask -and $script:ContextTask.AsyncWaitHandle.WaitOne(100)) {
+            $context = $script:ContextTask.Result
             $req = $context.Request
             $res = $context.Response
             $url = $req.Url.LocalPath.ToLower()
@@ -943,15 +885,29 @@ function Get-UserAction {
             if (-not $isAuthenticated -and $url -ne "/auth" -and $url -ne "/status") {
                 $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", ""
                 Send-HttpResponse -Response $res -Content $authHtml
-                $contextTask = $listener.GetContextAsync()
+                $script:ContextTask = $Listener.GetContextAsync()
                 continue
+            }
+            
+            # POSTボディの一括読み込み
+            $body = $null
+            if ($req.HttpMethod -eq "POST" -and $req.HasEntityBody) {
+                $r = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
+                $body = $r.ReadToEnd(); $r.Close()
             }
             
             # /auth POSTリクエスト処理
             if ($url -eq "/auth" -and $req.HttpMethod -eq "POST") {
-                if ($req.HasEntityBody) {
-                    $r = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
-                    $body = $r.ReadToEnd(); $r.Close()
+                # レートリミット処理：認証失敗後1秒以内のリクエストを即座にエラーで返す
+                $currentTime = Get-Date
+                if ($currentTime -lt $script:LastAuthFailedTime.AddSeconds(1)) {
+                    $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
+                    Send-HttpResponse -Response $res -Content $authHtml
+                    $script:ContextTask = $Listener.GetContextAsync()
+                    continue
+                }
+                
+                if ($body) {
                     
                     if ([System.Web.HttpUtility]::UrlDecode($body) -match "pin=([0-9]{6})") {
                         $submittedPin = $matches[1]
@@ -961,16 +917,16 @@ function Get-UserAction {
                             $res.StatusCode = 302
                             $res.Headers.Add("Location", "/")
                             Send-HttpResponse -Response $res -Content ""
-                            $contextTask = $listener.GetContextAsync()
+                            $script:ContextTask = $Listener.GetContextAsync()
                             continue
                         }
                     }
                 }
                 # 認証失敗：エラー表示
-                Start-Sleep -Seconds 1
+                $script:LastAuthFailedTime = Get-Date
                 $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
                 Send-HttpResponse -Response $res -Content $authHtml
-                $contextTask = $listener.GetContextAsync()
+                $script:ContextTask = $Listener.GetContextAsync()
                 continue
             }
             
@@ -987,15 +943,11 @@ function Get-UserAction {
                 }
                 Send-HttpResponse -Response $res -Content $statusText -ContentType "text/plain"
                 
-                $contextTask = $listener.GetContextAsync()
+                $script:ContextTask = $Listener.GetContextAsync()
                 continue
             }
 
             if ($req.HttpMethod -eq "POST") {
-                if ($req.HasEntityBody) {
-                    $r = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
-                    $body = $r.ReadToEnd(); $r.Close()
-                }
                 switch ($url) {
                     "/start"  { $resultAction = "Start"; $actionSetTime = Get-Date; $resHtml = $processingHtml }
                     "/next"   { $resultAction = "Next";  $actionSetTime = Get-Date; $resHtml = $processingHtml }
@@ -1026,12 +978,13 @@ function Get-UserAction {
                  break
             }
 
-            $contextTask = $listener.GetContextAsync()
+            $script:ContextTask = $Listener.GetContextAsync()
         }
 
         # --- コンソール確認 ---
         if ((!$shuttingDown) -and ($resultAction -eq $null) -and [Console]::KeyAvailable) {
-            $k = [Console]::ReadKey($true).Key.ToString().ToUpper()
+            $keyInfo = [Console]::ReadKey($true)
+            $k = $keyInfo.Key.ToString().ToUpper()
             
             # 終了確認待ちの場合
             if ($waitingExitConfirm) {
@@ -1049,18 +1002,36 @@ function Get-UserAction {
                 # 通常コマンド処理
                 
                 # コンソールからの終了要求
-                if ($k -eq "Q" -or $k -eq "ESCAPE") {
+                if ($k -eq "Q" -or $k -eq "ESCAPE" -or ($k -eq "C" -and $keyInfo.Modifiers -band [ConsoleModifiers]::Control)) {
                     $waitingExitConfirm = $true
                     Write-Host ""
                     Write-Host " Are you sure you want to exit? [Y] Confirm / [N] Cancel : " -ForegroundColor Yellow -NoNewline
                 }
 
+                # ネットワーク情報の手動更新
+                if ($k -eq "U") {
+                    Write-Host ""
+                    Write-Host " [System] Updating network info..." -ForegroundColor DarkYellow
+                    $cachedAdapters = Get-LocalActiveIPs
+                    Start-Sleep -Milliseconds 300
+                    Show-ConsolePage
+                }
+
                 if ($Mode -eq "Lobby") {
-                    if ($k -eq "ENTER" -or $k -eq "S") { $resultAction = "Start"; $actionSetTime = Get-Date }
+                    if ($k -eq "ENTER" -or $k -eq "S") { 
+                        if ($ActiveFiles -and @($ActiveFiles).Count -gt 0) {
+                            $resultAction = "Start"; $actionSetTime = Get-Date 
+                        } else {
+                            Write-Host ""
+                            Write-Host " [System] No slides in queue. Press [1-9] to select a completed slide." -ForegroundColor DarkYellow
+                            Start-Sleep -Milliseconds 3000
+                            Show-ConsolePage
+                        }
+                    }
                     
                     # ページング操作
-                    $totalActiveFiles = if ($ActiveFiles) { $ActiveFiles.Count } else { 0 }
-                    $totalFinishedFiles = if ($FinishedFiles) { $FinishedFiles.Count } else { 0 }
+                    $totalActiveFiles = @($ActiveFiles).Count
+                    $totalFinishedFiles = @($FinishedFiles).Count
                     $totalFiles = $totalActiveFiles + $totalFinishedFiles
                     $totalPages = [Math]::Ceiling($totalFiles / $itemsPerPage)
                     
@@ -1099,7 +1070,16 @@ function Get-UserAction {
                         }
                     }
                 } else {
-                    if ($k -eq "ENTER" -or $k -eq "N") { $resultAction = "Next"; $actionSetTime = Get-Date }
+                    if ($k -eq "ENTER" -or $k -eq "N") { 
+                        if ($NextFileName) {
+                            $resultAction = "Next"; $actionSetTime = Get-Date 
+                        } else {
+                            Write-Host ""
+                            Write-Host " [System] No slides in queue. Please press [L] to go Back to Lobby, or [R] to Retry." -ForegroundColor DarkYellow
+                            Start-Sleep -Milliseconds 3000
+                            Show-ConsolePage
+                        }
+                    }
                     if ($k -eq "R") { $resultAction = "Retry"; $actionSetTime = Get-Date }
                     if ($k -eq "L" -or $k -eq "BACKSPACE") { $resultAction = "Lobby"; $actionSetTime = Get-Date }
                 }
@@ -1121,18 +1101,14 @@ function Get-UserAction {
         }
     }
 
-    $listener.Stop()
-    $listener.Close()
-    Start-Sleep -Milliseconds 200
+    # HttpListener はメインフロー内で一元管理するため、ここでは Stop/Close しない
     
     return @{ Action = $resultAction; FileName = $resultFile }
 }
 
-Add-Type -AssemblyName System.Web
-
-# ------------------------------------------------------------
+# ============================================================================== 
 # 5. メインフロー
-# ------------------------------------------------------------
+# ==============================================================================
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Warning "Administrator privileges required. Please run PowerShell as Administrator."
@@ -1142,6 +1118,9 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 
 # コンソールの「閉じる」ボタンを無効化（誤操作防止）
 [ConsoleWindow]::DisableCloseButton()
+
+# Ctrl+Cをスクリプト終了ではなく通常のキー入力として処理
+[console]::TreatControlCAsInput = $true
 
 if (-not (Test-Path $TargetFolderPath)) { Write-Error "Target Folder Not Found"; exit }
 $finishFolderPath = Join-Path $TargetFolderPath $FinishFolderName
@@ -1158,12 +1137,22 @@ try {
 
 try {
     $exitLoop = $false
-    $autoPlayTarget = $null 
+    $autoPlayTarget = $null
+    
+    # HttpListener を作成・Start（メインフロー内で一元管理）
+    $listener = New-Object System.Net.HttpListener
+    $listener.Prefixes.Add("http://+:$WebPort/")
+    try {
+        $listener.Start()
+        $script:ContextTask = $listener.GetContextAsync()
+    } catch {
+        Write-Warning "Web control is unavailable due to port conflict. Only keyboard operations are available."
+    }
 
     while (-not $exitLoop) {
         
-        $activeFiles = Get-ChildItem -Path $TargetFolderPath -File | Where-Object { $_.Extension -in @('.ppt', '.pptx') -and $_.Name -notlike '~$*' } | Sort-Object Name
-        $finishedFiles = Get-ChildItem -Path $finishFolderPath -File | Where-Object { $_.Extension -in @('.ppt', '.pptx') -and $_.Name -notlike '~$*' } | Sort-Object Name
+        $activeFiles = Get-PptFiles -Path $TargetFolderPath
+        $finishedFiles = Get-PptFiles -Path $finishFolderPath
         
         $targetFileItem = $null
 
@@ -1172,7 +1161,7 @@ try {
             $targetFileItem = $autoPlayTarget
             $autoPlayTarget = $null
         } else {
-            $result = Get-UserAction -Mode "Lobby" -ActiveFiles $activeFiles -FinishedFiles $finishedFiles
+            $result = Get-UserAction -Mode "Lobby" -ActiveFiles $activeFiles -FinishedFiles $finishedFiles -Listener $listener
             
             switch ($result.Action) {
                 "Exit" { $exitLoop = $true; break }
@@ -1201,7 +1190,7 @@ try {
             $presentation.SlideShowSettings.Run() | Out-Null
             
             # 発表中の監視
-            $status = Watch-RunningPresentation -PptApp $pptApp -TargetFileItem $targetFileItem
+            $status = Watch-RunningPresentation -PptApp $pptApp -TargetFileItem $targetFileItem -Listener $listener
             
             # 手動終了(ManualStop)の場合はここで閉じる
             if ($status -eq "ManualStop") {
@@ -1225,10 +1214,10 @@ try {
             }
 
             # 正常終了の場合：ダイアログ(次へ/リトライ)を表示
-            $activeFiles = Get-ChildItem -Path $TargetFolderPath -File | Where-Object { $_.Extension -in @('.ppt', '.pptx') -and $_.Name -notlike '~$*' } | Sort-Object Name
+            $activeFiles = Get-PptFiles -Path $TargetFolderPath
             $nextName = if ($activeFiles) { $activeFiles[0].Name } else { "" }
 
-            $postResult = Get-UserAction -Mode "Dialog" -CurrentFileName $targetFileItem.Name -NextFileName $nextName
+            $postResult = Get-UserAction -Mode "Dialog" -CurrentFileName $targetFileItem.Name -NextFileName $nextName -Listener $listener
 
             switch ($postResult.Action) {
                 "Next"  { if ($activeFiles) { $autoPlayTarget = $activeFiles[0] } }
@@ -1255,6 +1244,15 @@ try {
     }
 
 } finally {
+    # HttpListener を停止・閉鎖
+    if ($listener) {
+        try {
+            if ($listener.IsListening) { $listener.Stop() }
+            $listener.Close()
+            Start-Sleep -Milliseconds 200
+        } catch {}
+    }
+    
     # コンソール画面をクリアして終了処理を明示
     Clear-Host
     Write-Host ""
