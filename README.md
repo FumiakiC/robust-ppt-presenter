@@ -23,7 +23,7 @@ Running a multi-speaker event often comes with severe operational headaches. Thi
 * 🚫 **The "No Install" Constraint:** Corporate PCs often block third-party software. **Solution:** Built entirely on native Windows tools (PowerShell & Batch). If you have Windows and PowerPoint, it just works.
 * 📶 **Unstable Venue Wi-Fi:** Mobile devices go to sleep, or venue Wi-Fi drops momentarily. **Solution:** Engineered with a robust polling architecture. The server safely ignores broken pipes and client disconnects, and the web UI features an auto-reconnecting offline overlay. The presentation will *never* crash due to a network drop.
 * 🔒 **Unauthorized Access Risk:** Using an open venue Wi-Fi means anyone could potentially discover and access the web remote. **Solution:** Built-in Secure PIN Authentication. A dynamic 6-digit PIN is generated on the host PC, ensuring only authorized staff can control the slides.
-* 📺 **Ugly Desktop Transitions:** Dragging windows or showing the file explorer to the audience looks unprofessional. **Solution:** One-tap seamless transitions. The next slide deck opens directly in full-screen mode the moment the previous one ends.
+* 📺 **Ugly Desktop Transitions:** Dragging windows or showing the file explorer to the audience looks unprofessional. **Solution:** Frictionless switching. Launch the next slide deck with a single tap, eliminating the clumsy desktop navigation between speakers.
 * ⚠️ **Human Error Under Pressure:** Clicking the wrong file or repeating a speaker during a fast-paced event. **Solution:** Disabled console close buttons, Y/N exit confirmations, and smart queue management that automatically moves finished presentations to a `finish/` directory.
 
 ---
