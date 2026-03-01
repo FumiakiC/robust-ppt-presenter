@@ -90,12 +90,14 @@ if %errorlevel% neq 0 (
 )
 
 REM -----------------------------------------------
+REM ここから下、起動時に前回終了時のTIME_WAITが大量に表示され、エラーと誤認されるのを防ぐためデバッグ表示を無効化
 REM Reference: current LISTEN status (may be empty before listener starts)
 REM -----------------------------------------------
-echo.
-echo [INFO] Current binding status for port %WEB_PORT% (reference before start):
-netstat -ano | findstr ":%WEB_PORT%" || echo   (None found)
-echo.
+REM echo.
+REM echo [INFO] Current binding status for port %WEB_PORT% (reference before start):
+REM netstat -ano | findstr ":%WEB_PORT%" || echo   (None found)
+REM echo.
+REM ここから上、起動時に前回終了時のTIME_WAITが大量に表示され、エラーと誤認されるのを防ぐためデバッグ表示を無効化
 
 REM -----------------------------------------------
 REM Start PowerShell script (execution policy bypass)
