@@ -12,9 +12,6 @@ param(
 # エラー発生時に停止する設定ですが、送信エラーは個別にcatchして無視します
 $ErrorActionPreference = 'Stop'
 
-$script:AuthPin = Get-Random -Minimum 100000 -Maximum 999999
-$script:SessionToken = [guid]::NewGuid().ToString('N')
-
 # ============================================================================== 
 # コンソールウィンドウ制御（誤操作防止）
 # ============================================================================== 
@@ -47,6 +44,11 @@ public class ConsoleWindow {
 }
 "@
 
+# ==============================================================================
+# セキュリティ：ワンタイムPIN認証
+# ==============================================================================
+$script:AuthPin = Get-Random -Minimum 100000 -Maximum 999999
+$script:SessionToken = [guid]::NewGuid().ToString('N')
 
 # ============================================================================== 
 # HTML/CSS/JSテンプレート集約
@@ -95,220 +97,6 @@ $script:HtmlTemplates = @{
     <div class="container">
 "@
 
-    AuthView = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-    <title>Secure Access</title>
-    <style>
-        :root {{
-            color-scheme: dark;
-            --bg: #070b1a;
-            --card: rgba(19, 30, 54, 0.52);
-            --border: rgba(116, 174, 255, 0.22);
-            --text: #e8f2ff;
-            --subtext: #9fb0d1;
-            --accent: #66b3ff;
-            --accent-strong: #2a7dff;
-            --danger: #ff6d6d;
-        }}
-        * {{ box-sizing: border-box; }}
-        html, body {{ height: 100%; }}
-        body {{
-            margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background:
-                radial-gradient(900px 600px at 10% -10%, rgba(80, 162, 255, 0.26), transparent 65%),
-                radial-gradient(800px 540px at 100% 0%, rgba(17, 106, 255, 0.20), transparent 72%),
-                radial-gradient(700px 500px at 30% 100%, rgba(0, 217, 255, 0.14), transparent 74%),
-                var(--bg);
-            color: var(--text);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-            padding: 20px;
-        }}
-        body::before {{
-            content: "";
-            position: fixed;
-            inset: -20%;
-            background-image:
-                linear-gradient(rgba(98, 132, 198, 0.06) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(98, 132, 198, 0.06) 1px, transparent 1px);
-            background-size: 36px 36px;
-            transform: rotate(-8deg);
-            pointer-events: none;
-            filter: blur(0.4px);
-        }}
-        .orb {{
-            position: fixed;
-            border-radius: 50%;
-            filter: blur(60px);
-            pointer-events: none;
-            z-index: 0;
-        }}
-        .orb-one {{ width: 280px; height: 280px; background: rgba(53, 116, 255, 0.35); top: 8%; left: 6%; }}
-        .orb-two {{ width: 320px; height: 320px; background: rgba(0, 225, 255, 0.22); bottom: 4%; right: 4%; }}
-        .auth-shell {{
-            position: relative;
-            z-index: 1;
-            width: min(460px, 100%);
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 22px;
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            box-shadow: 0 22px 80px rgba(8, 16, 40, 0.65);
-            padding: 28px 24px 24px;
-        }}
-        .auth-title {{ margin: 0 0 8px; font-size: 1.45rem; font-weight: 700; letter-spacing: 0.3px; }}
-        .auth-subtitle {{ margin: 0 0 24px; color: var(--subtext); font-size: 0.95rem; }}
-        .pin-wrap {{
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 10px;
-            margin: 8px 0 18px;
-        }}
-        .pin-box {{
-            height: 54px;
-            border-radius: 12px;
-            border: 1px solid rgba(143, 179, 235, 0.42);
-            background: rgba(8, 18, 36, 0.64);
-            color: var(--text);
-            font-size: 1.5rem;
-            text-align: center;
-            outline: none;
-            transition: border-color .18s ease, box-shadow .18s ease, transform .12s ease;
-        }}
-        .pin-box:focus {{
-            border-color: rgba(102, 179, 255, 0.95);
-            box-shadow: 0 0 0 3px rgba(47, 122, 255, 0.22);
-            transform: translateY(-1px);
-        }}
-        .auth-action {{
-            margin-top: 6px;
-            width: 100%;
-            border: none;
-            border-radius: 14px;
-            padding: 15px 16px;
-            font-size: 1.04rem;
-            font-weight: 700;
-            color: #fff;
-            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-            cursor: pointer;
-            transition: transform .12s ease, box-shadow .18s ease, filter .18s ease;
-            box-shadow: 0 10px 28px rgba(44, 105, 220, 0.42);
-            touch-action: manipulation;
-        }}
-        .auth-action:hover {{ filter: brightness(1.04); transform: translateY(-1px); }}
-        .auth-action:active {{ transform: translateY(2px) scale(0.995); box-shadow: 0 5px 16px rgba(34, 88, 193, 0.35); }}
-        .auth-error {{
-            margin: 0 0 12px;
-            color: var(--danger);
-            font-weight: 700;
-            min-height: 20px;
-        }}
-        .pin-wrap.is-error {{ animation: shake .32s ease-in-out 0s 2; }}
-        @keyframes shake {{
-            0%, 100% {{ transform: translateX(0); }}
-            20% {{ transform: translateX(-6px); }}
-            40% {{ transform: translateX(6px); }}
-            60% {{ transform: translateX(-5px); }}
-            80% {{ transform: translateX(5px); }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="orb orb-one"></div>
-    <div class="orb orb-two"></div>
-
-    <section class="auth-shell">
-        <h1 class="auth-title">Secure Console Access</h1>
-        <p class="auth-subtitle">Enter the one-time PIN shown on the host PC.</p>
-        <p class='auth-error'>{0}</p>
-        <form id="authForm" method="post" action="/auth" autocomplete="off">
-            <div id="pinWrap" class="pin-wrap {1}">
-                <input class="pin-box" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="PIN digit 1">
-                <input class="pin-box" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="PIN digit 2">
-                <input class="pin-box" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="PIN digit 3">
-                <input class="pin-box" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="PIN digit 4">
-                <input class="pin-box" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="PIN digit 5">
-                <input class="pin-box" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="PIN digit 6">
-            </div>
-            <input type="hidden" id="pin" name="pin" value="">
-            <button type="submit" class="auth-action">Authenticate</button>
-        </form>
-    </section>
-
-    <script>
-        (function() {{
-            var form = document.getElementById('authForm');
-            var wrap = document.getElementById('pinWrap');
-            var hidden = document.getElementById('pin');
-            var boxes = Array.prototype.slice.call(document.querySelectorAll('.pin-box'));
-
-            function onlyDigit(value) {{
-                return (value || '').replace(/\D/g, '').slice(0, 1);
-            }}
-
-            boxes.forEach(function(box, index) {{
-                box.addEventListener('input', function(e) {{
-                    var digit = onlyDigit(e.target.value);
-                    e.target.value = digit;
-                    if (digit && index < boxes.length - 1) {{
-                        boxes[index + 1].focus();
-                        boxes[index + 1].select();
-                    }}
-                }});
-
-                box.addEventListener('keydown', function(e) {{
-                    if (e.key === 'Backspace' && !box.value && index > 0) {{
-                        boxes[index - 1].focus();
-                        boxes[index - 1].value = '';
-                    }}
-                    if (e.key === 'ArrowLeft' && index > 0) {{
-                        boxes[index - 1].focus();
-                        e.preventDefault();
-                    }}
-                    if (e.key === 'ArrowRight' && index < boxes.length - 1) {{
-                        boxes[index + 1].focus();
-                        e.preventDefault();
-                    }}
-                }});
-
-                box.addEventListener('paste', function(e) {{
-                    var text = (e.clipboardData || window.clipboardData).getData('text') || '';
-                    var digits = text.replace(/\D/g, '').slice(0, boxes.length).split('');
-                    if (!digits.length) return;
-                    e.preventDefault();
-                    boxes.forEach(function(item, i) {{ item.value = digits[i] || ''; }});
-                    var focusIndex = Math.min(digits.length, boxes.length - 1);
-                    boxes[focusIndex].focus();
-                }});
-            }});
-
-            form.addEventListener('submit', function(e) {{
-                var pin = boxes.map(function(item) {{ return onlyDigit(item.value); }}).join('');
-                if (pin.length !== 6) {{
-                    e.preventDefault();
-                    wrap.classList.remove('is-error');
-                    void wrap.offsetWidth;
-                    wrap.classList.add('is-error');
-                    return;
-                }}
-                hidden.value = pin;
-            }});
-
-            if (boxes.length) {{ boxes[0].focus(); }}
-        }})();
-    </script>
-</body>
-</html>
-"@
-
     # プレゼンテーション実行中画面 (パラメータ: {0}=FileName)
     NowPlayingView = @"
     <div class="card" style="border: 1px solid #28a745;">
@@ -322,13 +110,12 @@ $script:HtmlTemplates = @{
     </form>
     
     <script>
-        // エクスポネンシャル・バックオフを用いた状態確認ポーリング
         (function() {{
             var overlay = document.getElementById('offline-overlay');
-            var defaultDelay = 1500;  // デフォルト待機時間（ミリ秒）
+            var defaultDelay = 1500;
             var currentDelay = defaultDelay;
-            var maxDelay = 5000;  // 最大待機時間（ミリ秒）
-            var backoffMultiplier = 1.5;  // バックオフ倍率
+            var maxDelay = 5000;
+            var backoffMultiplier = 1.5;
             
             function pollStatus() {{
                 var showOverlayTimer = setTimeout(function() {{
@@ -343,30 +130,20 @@ $script:HtmlTemplates = @{
                     throw new Error('Network error');
                 }})
                 .then(text => {{
-                    // 成功時：待機時間をデフォルトにリセット
                     currentDelay = defaultDelay;
-                    
-                    // サーバーから 'running' 以外が返ってきたら画面遷移
                     if (text !== 'running') {{
                         window.location.reload();
                     }} else {{
-                        // 継続してポーリング
                         setTimeout(pollStatus, currentDelay);
                     }}
                 }})
                 .catch(error => {{
-                    // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
                     clearTimeout(showOverlayTimer);
                     if (overlay) overlay.classList.add('active');
                     currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
-                    console.log('Waiting connection... (retry in ' + currentDelay + 'ms)');
-                    
-                    // 継続してポーリング
                     setTimeout(pollStatus, currentDelay);
                 }});
             }}
-            
-            // ポーリング開始
             pollStatus();
         }})();
     </script>
@@ -390,20 +167,19 @@ $script:HtmlTemplates = @{
         <form method="post" action="/exit"><button class="btn btn-exit">Exit All</button></form>
 "@
 
-    # ポーリングスクリプト（状態監視用JS）
+    # ポーリングスクリプト（Lobby/Dialog用）
     PollingScript = @"
     <script>
-        // エクスポネンシャル・バックオフを用いた状態監視ポーリング
         (function() {{
             var overlay = document.getElementById('offline-overlay');
-            var defaultDelay = 300;  // デフォルト待機時間（ミリ秒）
+            var defaultDelay = 300;
             var currentDelay = defaultDelay;
-            var maxDelay = 5000;  // 最大待機時間（ミリ秒）
-            var backoffMultiplier = 1.5;  // バックオフ倍率
-            var isPolling = true;  // ポーリング制御フラグ
+            var maxDelay = 5000;
+            var backoffMultiplier = 1.5;
+            var isPolling = true;
             
             function pollStatus() {{
-                if (!isPolling) return;  // ポーリング停止時は処理しない
+                if (!isPolling) return;
                 
                 var showOverlayTimer = setTimeout(function() {{
                     if (overlay) overlay.classList.add('active');
@@ -416,34 +192,25 @@ $script:HtmlTemplates = @{
                     return r.text();
                 }})
                 .then(status => {{
-                    // 成功時：待機時間をデフォルトにリセット
                     currentDelay = defaultDelay;
-                    
                     if (status === 'stopping') {{
                         isPolling = false;
                         window.location.href = '/exit';
                     }} else if (status === 'changing' || status === 'starting' || status === 'running') {{
-                        // プレゼンテーション開始や状態変化時にリロード
                         isPolling = false;
                         window.location.href = '/';
                     }} else {{
-                        // 継続してポーリング
                         setTimeout(pollStatus, currentDelay);
                     }}
                 }})
                 .catch(e => {{
-                    // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
                     clearTimeout(showOverlayTimer);
                     if (overlay) overlay.classList.add('active');
                     currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
-                    console.log('Waiting connection... (retry in ' + currentDelay + 'ms)');
-                    
-                    // 継続してポーリング
                     setTimeout(pollStatus, currentDelay);
                 }});
             }}
             
-            // フォーム送信時にポーリングを停止して画面遷移の競合を防止
             document.addEventListener('DOMContentLoaded', function() {{
                 var forms = document.querySelectorAll('form');
                 forms.forEach(function(form) {{
@@ -455,17 +222,7 @@ $script:HtmlTemplates = @{
                         isPolling = false;
                     }});
                 }});
-                
-                // ボタンクリック時も念のため停止
-                var buttons = document.querySelectorAll('.btn');
-                buttons.forEach(function(btn) {{
-                    btn.addEventListener('click', function() {{
-                        isPolling = false;
-                    }});
-                }});
             }});
-            
-            // ポーリング開始
             pollStatus();
         }})();
     </script>
@@ -475,17 +232,16 @@ $script:HtmlTemplates = @{
     ProcessingView = @"
     <div style="margin-top:50px;"><div class="loader"></div><h2>Processing...</h2><p>Screen will refresh</p></div>
     <script>
-        // エクスポネンシャル・バックオフを用いた状態確認ポーリング
         (function() {{
             var overlay = document.getElementById('offline-overlay');
-            var defaultDelay = 500;  // デフォルト待機時間（ミリ秒）
+            var defaultDelay = 500;
             var currentDelay = defaultDelay;
-            var maxDelay = 5000;  // 最大待機時間（ミリ秒）
-            var backoffMultiplier = 1.5;  // バックオフ倍率
+            var maxDelay = 5000;
+            var backoffMultiplier = 1.5;
             var checkCount = 0;
-            var maxRetries = 60; // 最大30秒待機（タイムアウト判定用）
+            var maxRetries = 60;
             var errorCount = 0;
-            var maxErrors = 40; // 接続エラー時は最大20秒待機
+            var maxErrors = 40;
             
             function pollStatus() {{
                 var showOverlayTimer = setTimeout(function() {{
@@ -499,42 +255,31 @@ $script:HtmlTemplates = @{
                     return r.text();
                 }})
                 .then(status => {{
-                    // 成功時：待機時間をデフォルトにリセット
                     currentDelay = defaultDelay;
-                    
-                    // running（発表中）またはwaiting（待機中）になったらリロード
                     if (status === 'running' || (status === 'waiting' && checkCount > 2)) {{
                         window.location.href = '/';
                     }} else {{
                         checkCount++;
                         if (checkCount > maxRetries) {{
-                            // タイムアウト時は強制リロード
                             window.location.href = '/';
                         }} else {{
-                            // 継続してポーリング
                             setTimeout(pollStatus, currentDelay);
                         }}
                     }}
                 }})
                 .catch(e => {{
-                    // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
                     clearTimeout(showOverlayTimer);
                     if (overlay) overlay.classList.add('active');
                     currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
-                    
-                    // 接続エラー時、プレゼンテーション起動を待って再試行
                     checkCount++;
                     errorCount++;
                     if (errorCount > maxErrors || checkCount > maxRetries) {{
                         window.location.href = '/';
                     }} else {{
-                        // 継続してポーリング（バックオフした待機時間で）
                         setTimeout(pollStatus, currentDelay);
                     }}
                 }});
             }}
-            
-            // ポーリング開始
             pollStatus();
         }})();
     </script>
@@ -550,6 +295,251 @@ $script:HtmlTemplates = @{
         <p style="color:#666; margin-top:20px;">Server has been shut down.</p>
     </div>
 </body></html>
+"@
+
+    # PIN認証画面 (パラメータ: {0}=BgColor, {1}=ErrorFlag "error" or "")
+    AuthView = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>Authentication Required</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }}
+        body::before {{
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(0,210,255,0.1) 0%, transparent 70%);
+            animation: bgRotate 20s linear infinite;
+        }}
+        @keyframes bgRotate {{
+            from {{ transform: rotate(0deg); }}
+            to {{ transform: rotate(360deg); }}
+        }}
+        .auth-container {{
+            position: relative;
+            z-index: 10;
+            background: rgba(30, 30, 30, 0.7);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 25px;
+            padding: 50px 40px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+        }}
+        .lock-icon {{
+            font-size: 4rem;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, #00d2ff, #0084ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: pulse 2s ease-in-out infinite;
+        }}
+        h1 {{
+            color: #fff;
+            font-size: 1.8rem;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }}
+        .subtitle {{
+            color: #aaa;
+            font-size: 0.95rem;
+            margin-bottom: 40px;
+        }}
+        .pin-inputs {{
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 30px;
+        }}
+        .pin-inputs.shake {{
+            animation: shake 0.5s;
+        }}
+        @keyframes shake {{
+            0%, 100% {{ transform: translateX(0); }}
+            10%, 30%, 50%, 70%, 90% {{ transform: translateX(-8px); }}
+            20%, 40%, 60%, 80% {{ transform: translateX(8px); }}
+        }}
+        .pin-box {{
+            width: 55px;
+            height: 65px;
+            font-size: 2rem;
+            text-align: center;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            outline: none;
+            transition: all 0.3s;
+            caret-color: #00d2ff;
+        }}
+        .pin-box:focus {{
+            border-color: #00d2ff;
+            background: rgba(0, 210, 255, 0.1);
+            box-shadow: 0 0 15px rgba(0, 210, 255, 0.3);
+        }}
+        .pin-box.error {{
+            border-color: #dc3545;
+            background: rgba(220, 53, 69, 0.1);
+        }}
+        .error-msg {{
+            color: #dc3545;
+            font-size: 0.9rem;
+            margin-top: -20px;
+            margin-bottom: 20px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }}
+        .error-msg.show {{
+            opacity: 1;
+        }}
+        .btn-submit {{
+            width: 100%;
+            padding: 18px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #00d2ff, #0084ff);
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(0, 210, 255, 0.4);
+        }}
+        .btn-submit:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 210, 255, 0.6);
+        }}
+        .btn-submit:active {{
+            transform: translateY(1px);
+            box-shadow: 0 2px 10px rgba(0, 210, 255, 0.4);
+        }}
+        .btn-submit:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }}
+        @keyframes pulse {{
+            0%, 100% {{ transform: scale(1); }}
+            50% {{ transform: scale(1.05); }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="auth-container">
+        <div class="lock-icon">🔒</div>
+        <h1>Enter PIN Code</h1>
+        <p class="subtitle">Please check your PC console for 6-digit PIN</p>
+        
+        <form method="post" action="/auth" id="authForm">
+            <div class="pin-inputs {1}" id="pinInputs">
+                <input type="text" class="pin-box {1}" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" id="pin1">
+                <input type="text" class="pin-box {1}" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" id="pin2">
+                <input type="text" class="pin-box {1}" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" id="pin3">
+                <input type="text" class="pin-box {1}" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" id="pin4">
+                <input type="text" class="pin-box {1}" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" id="pin5">
+                <input type="text" class="pin-box {1}" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="off" id="pin6">
+            </div>
+            <div class="error-msg {1}" id="errorMsg">❌ Invalid PIN. Please try again.</div>
+            <input type="hidden" name="pin" id="pinValue">
+            <button type="submit" class="btn-submit" id="submitBtn" disabled>Unlock</button>
+        </form>
+    </div>
+
+    <script>
+        var boxes = [document.getElementById('pin1'), document.getElementById('pin2'), document.getElementById('pin3'), 
+                     document.getElementById('pin4'), document.getElementById('pin5'), document.getElementById('pin6')];
+        var submitBtn = document.getElementById('submitBtn');
+        var pinValue = document.getElementById('pinValue');
+        var form = document.getElementById('authForm');
+        var errorMsg = document.getElementById('errorMsg');
+        var pinInputsDiv = document.getElementById('pinInputs');
+        
+        // エラー状態の場合は表示
+        var hasError = '{1}' === 'error';
+        if (hasError) {{
+            errorMsg.classList.add('show');
+        }}
+        
+        boxes.forEach(function(box, index) {{
+            // 数字のみ入力可能
+            box.addEventListener('input', function(e) {{
+                var val = e.target.value;
+                if (!/^[0-9]$/.test(val)) {{
+                    e.target.value = '';
+                    return;
+                }}
+                
+                // エラー状態をクリア
+                box.classList.remove('error');
+                errorMsg.classList.remove('show');
+                pinInputsDiv.classList.remove('shake');
+                
+                // 次のボックスにフォーカス
+                if (val && index < 5) {{
+                    boxes[index + 1].focus();
+                }}
+                
+                // すべて入力されたら送信ボタンを有効化
+                checkComplete();
+            }});
+            
+            // Backspaceで前のボックスに戻る
+            box.addEventListener('keydown', function(e) {{
+                if (e.key === 'Backspace' && !e.target.value && index > 0) {{
+                    boxes[index - 1].focus();
+                }}
+            }});
+            
+            // ペースト対応
+            box.addEventListener('paste', function(e) {{
+                e.preventDefault();
+                var pasteData = e.clipboardData.getData('text').replace(/[^0-9]/g, '').substring(0, 6);
+                for (var i = 0; i < pasteData.length && (index + i) < 6; i++) {{
+                    boxes[index + i].value = pasteData[i];
+                }}
+                if (index + pasteData.length < 6) {{
+                    boxes[index + pasteData.length].focus();
+                }} else {{
+                    boxes[5].focus();
+                }}
+                checkComplete();
+            }});
+        }});
+        
+        function checkComplete() {{
+            var complete = boxes.every(function(b) {{ return b.value.length === 1; }});
+            submitBtn.disabled = !complete;
+        }}
+        
+        // フォーム送信時に6桁を結合
+        form.addEventListener('submit', function() {{
+            pinValue.value = boxes.map(function(b) {{ return b.value; }}).join('');
+        }});
+        
+        // 最初のボックスにフォーカス
+        boxes[0].focus();
+    </script>
+</body>
+</html>
 "@
 }
 
@@ -761,9 +751,9 @@ function Get-UserAction {
         Write-Host $line -ForegroundColor Cyan
         Write-Host "   Presentation Controller V7.4" -ForegroundColor White -BackgroundColor DarkCyan
         Write-Host $line -ForegroundColor Cyan
-        Write-Host " [One-Time PIN]" -ForegroundColor Magenta
-        $pinDisplay = ([string]$script:AuthPin).ToCharArray() -join ' '
-        Write-Host "    $pinDisplay" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "   🔐 PIN CODE: " -NoNewline -ForegroundColor Yellow
+        Write-Host $script:AuthPin -ForegroundColor White -BackgroundColor DarkRed
         Write-Host ""
         foreach ($adapter in $adapters) {
             Write-Host " [Web URL - $($adapter.InterfaceAlias)] http://$($adapter.IPAddress):$($WebPort)/" -ForegroundColor Yellow
@@ -897,38 +887,45 @@ function Get-UserAction {
             $req = $context.Request
             $res = $context.Response
             $url = $req.Url.LocalPath.ToLower()
-
-            $cookie = $req.Cookies["SessionToken"]
-            $isAuthenticated = ($cookie -and $cookie.Value -eq $script:SessionToken)
-
-            if (-not $isAuthenticated) {
-                if ($url -eq "/auth" -and $req.HttpMethod -eq "POST") {
-                    $postedPin = ""
-                    if ($req.HasEntityBody) {
-                        $authReader = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
-                        $authBody = $authReader.ReadToEnd()
-                        $authReader.Close()
-                        if ([System.Web.HttpUtility]::UrlDecode($authBody) -match "(?:^|&)pin=([^&]*)") {
-                            $postedPin = [System.Web.HttpUtility]::UrlDecode($matches[1])
+            
+            # --- 認証ミドルウェア：Cookie確認 ---
+            $isAuthenticated = $false
+            if ($req.Cookies["SessionToken"]) {
+                if ($req.Cookies["SessionToken"].Value -eq $script:SessionToken) {
+                    $isAuthenticated = $true
+                }
+            }
+            
+            # 認証が必要なパス（/authと/statusは除外）
+            if (-not $isAuthenticated -and $url -ne "/auth" -and $url -ne "/status") {
+                $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", ""
+                Send-HttpResponse -Response $res -Content $authHtml
+                $contextTask = $listener.GetContextAsync()
+                continue
+            }
+            
+            # /auth POSTリクエスト処理
+            if ($url -eq "/auth" -and $req.HttpMethod -eq "POST") {
+                if ($req.HasEntityBody) {
+                    $r = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
+                    $body = $r.ReadToEnd(); $r.Close()
+                    
+                    if ([System.Web.HttpUtility]::UrlDecode($body) -match "pin=([0-9]{6})") {
+                        $submittedPin = $matches[1]
+                        if ($submittedPin -eq $script:AuthPin.ToString()) {
+                            # 認証成功：Cookieをセットしてリダイレクト
+                            $res.Headers.Add("Set-Cookie", "SessionToken=$script:SessionToken; HttpOnly; Path=/")
+                            $res.StatusCode = 302
+                            $res.Headers.Add("Location", "/")
+                            Send-HttpResponse -Response $res -Content ""
+                            $contextTask = $listener.GetContextAsync()
+                            continue
                         }
                     }
-
-                    if ($postedPin -eq [string]$script:AuthPin) {
-                        try {
-                            $res.StatusCode = 302
-                            $res.AddHeader("Set-Cookie", "SessionToken=$($script:SessionToken); HttpOnly; Path=/")
-                            $res.AddHeader("Location", "/")
-                            $res.Close()
-                        } catch {}
-                    } else {
-                        $resHtml = $script:HtmlTemplates.AuthView -f "Invalid PIN", "is-error"
-                        Send-HttpResponse -Response $res -Content $resHtml
-                    }
-                } else {
-                    $resHtml = $script:HtmlTemplates.AuthView -f "", ""
-                    Send-HttpResponse -Response $res -Content $resHtml
                 }
-
+                # 認証失敗：エラー表示
+                $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
+                Send-HttpResponse -Response $res -Content $authHtml
                 $contextTask = $listener.GetContextAsync()
                 continue
             }
@@ -1199,14 +1196,27 @@ try {
     }
 
 } finally {
+    # コンソール画面をクリアして終了処理を明示
+    Clear-Host
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Magenta
+    Write-Host "  [System] Shutting down..." -ForegroundColor Magenta
+    Write-Host "========================================" -ForegroundColor Magenta
+    Write-Host ""
+    
     # PowerPointアプリケーション全体の終了処理
     if ($pptApp) { 
         try { $pptApp.Quit() } catch {}
         Release-ComObject -obj $pptApp
         $pptApp = $null
     }
+    
     # ガベージコレクションを強制実行してPOWERPNT.EXEプロセスを確実に終了
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
-    Write-Host "System terminated." -ForegroundColor Red
+    
+    Write-Host "System terminated." -ForegroundColor Green
+    Write-Host ""
+    
+    [Environment]::Exit(0)
 }
