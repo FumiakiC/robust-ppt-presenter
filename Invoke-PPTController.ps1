@@ -12,6 +12,287 @@ param(
 # エラー発生時に停止する設定ですが、送信エラーは個別にcatchして無視します
 $ErrorActionPreference = 'Stop'
 
+# ============================================================================== 
+# コンソールウィンドウ制御（誤操作防止）
+# ============================================================================== 
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public class ConsoleWindow {
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
+
+    [DllImport("user32.dll")]
+    public static extern int RemoveMenu(IntPtr hMenu, int nPosition, int wFlags);
+
+    public const int SC_CLOSE = 0xF060;
+    public const int MF_BYCOMMAND = 0x00000000;
+
+    public static void DisableCloseButton() {
+        IntPtr hWnd = GetConsoleWindow();
+        if (hWnd != IntPtr.Zero) {
+            IntPtr hMenu = GetSystemMenu(hWnd, false);
+            if (hMenu != IntPtr.Zero) {
+                RemoveMenu(hMenu, SC_CLOSE, MF_BYCOMMAND);
+            }
+        }
+    }
+}
+"@
+
+
+# ============================================================================== 
+# HTML/CSS/JSテンプレート集約
+# ============================================================================== 
+$script:HtmlTemplates = @{
+    # 共通HTMLヘッダー + CSS (パラメータ: {0}=Title, {1}=BgColor)
+    HtmlHeader = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>{0}</title>
+    <style>
+        body {{ font-family: sans-serif; background: {1}; color: #fff; text-align: center; padding: 20px; margin: 0; }}
+        .container {{ max-width: 600px; margin: 0 auto; }}
+        .card {{ background: #333; padding: 20px; border-radius: 15px; margin-bottom: 20px; }}
+        h2 {{ color: #00d2ff; margin: 0 0 5px 0; font-size: 1.3rem; }}
+        p {{ color: #ccc; font-size: 0.9rem; margin: 5px 0; }}
+        .btn {{ display: block; width: 100%; padding: 16px; margin: 10px 0; font-size: 1.1rem; border: none; border-radius: 10px; cursor: pointer; color: white; font-weight: bold; }}
+        .btn-start {{ background: linear-gradient(135deg, #007bff, #0056b3); font-size: 1.2rem; padding: 20px; }}
+        .btn-stop  {{ background: linear-gradient(135deg, #dc3545, #a71d2a); font-size: 1.2rem; padding: 20px; box-shadow: 0 4px 10px rgba(220,53,69,0.4); }}
+        .btn-next  {{ background: linear-gradient(135deg, #28a745, #218838); padding: 20px; font-size: 1.2rem; }}
+        .btn-retry {{ background: linear-gradient(135deg, #ffc107, #e0a800); color: #000; }}
+        .btn-list  {{ background: #17a2b8; }}
+        .btn-exit  {{ background: #6c757d; opacity: 0.8; margin-top: 30px; }}
+        .btn-file {{ background: #444; text-align: left; padding: 12px 15px; font-size: 1rem; margin: 5px 0; border-left: 5px solid #00d2ff; }}
+        .btn-finished {{ background: #2a2a2a; border-left: 5px solid #6c757d; color: #aaa; }}
+        .list-container {{ text-align: left; margin-top: 20px; max-height: 40vh; overflow-y: auto; }}
+        .loader {{ border: 5px solid #333; border-top: 5px solid #00d2ff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }}
+        .playing-icon {{ font-size: 3rem; color: #28a745; margin: 10px; animation: pulse 2s infinite; }}
+        .end-icon {{ font-size: 4rem; color: #dc3545; margin: 20px 0; }}
+        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+        @keyframes pulse {{ 0% {{ transform: scale(1); opacity: 1; }} 50% {{ transform: scale(1.1); opacity: 0.8; }} 100% {{ transform: scale(1); opacity: 1; }} }}
+    </style>
+</head>
+<body>
+    <div class="container">
+"@
+
+    # プレゼンテーション実行中画面 (パラメータ: {0}=FileName)
+    NowPlayingView = @"
+    <div class="card" style="border: 1px solid #28a745;">
+        <div class="playing-icon">▶</div>
+        <h2>Now Presenting</h2>
+        <p style="font-weight:bold; color:#fff;">{0}</p>
+        <p>Controlling slides on PC...</p>
+    </div>
+    <form method="post" action="/stop">
+        <button class="btn btn-stop">■ Stop Presentation</button>
+    </form>
+    
+    <script>
+        // エクスポネンシャル・バックオフを用いた状態確認ポーリング
+        (function() {{
+            var defaultDelay = 1500;  // デフォルト待機時間（ミリ秒）
+            var currentDelay = defaultDelay;
+            var maxDelay = 5000;  // 最大待機時間（ミリ秒）
+            var backoffMultiplier = 1.5;  // バックオフ倍率
+            
+            function pollStatus() {{
+                fetch('/status?t=' + Date.now())
+                .then(response => {{
+                    if (response.ok) {{ return response.text(); }}
+                    throw new Error('Network error');
+                }})
+                .then(text => {{
+                    // 成功時：待機時間をデフォルトにリセット
+                    currentDelay = defaultDelay;
+                    
+                    // サーバーから 'running' 以外が返ってきたら画面遷移
+                    if (text !== 'running') {{
+                        window.location.reload();
+                    }} else {{
+                        // 継続してポーリング
+                        setTimeout(pollStatus, currentDelay);
+                    }}
+                }})
+                .catch(error => {{
+                    // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
+                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
+                    console.log('Waiting connection... (retry in ' + currentDelay + 'ms)');
+                    
+                    // 継続してポーリング
+                    setTimeout(pollStatus, currentDelay);
+                }});
+            }}
+            
+            // ポーリング開始
+            pollStatus();
+        }})();
+    </script>
+</div></body></html>
+"@
+
+    # Lobby画面（スライド一覧） (パラメータ: {0}=stBtn, {1}=nextTxt, {2}=listHtml)
+    LobbyView = @"
+        <div class="card"><h2>Select Slide</h2><p>Select from list or press Start</p></div>
+        <form method="post" action="/start"><button class="btn btn-start" {0}>Start: {1}</button></form>
+        {2}
+        <form method="post" action="/exit"><button class="btn btn-exit">Exit System</button></form>
+"@
+
+    # プレゼンテーション終了後のダイアログ画面 (パラメータ: {0}=CurrentFileName, {1}=nxtSt, {2}=nxtLbl)
+    DialogView = @"
+        <div class="card"><h2>Presentation Ended</h2><p>{0}</p></div>
+        <form method="post" action="/next"><button class="btn btn-next" {1}>{2}</button></form>
+        <form method="post" action="/retry"><button class="btn btn-retry">Play Again</button></form>
+        <form method="post" action="/lobby"><button class="btn btn-list">Back to List</button></form>
+        <form method="post" action="/exit"><button class="btn btn-exit">Exit All</button></form>
+"@
+
+    # ポーリングスクリプト（状態監視用JS）
+    PollingScript = @"
+    <script>
+        // エクスポネンシャル・バックオフを用いた状態監視ポーリング
+        (function() {{
+            var defaultDelay = 300;  // デフォルト待機時間（ミリ秒）
+            var currentDelay = defaultDelay;
+            var maxDelay = 5000;  // 最大待機時間（ミリ秒）
+            var backoffMultiplier = 1.5;  // バックオフ倍率
+            var isPolling = true;  // ポーリング制御フラグ
+            
+            function pollStatus() {{
+                if (!isPolling) return;  // ポーリング停止時は処理しない
+                
+                fetch('/status?t=' + Date.now())
+                .then(r => r.text())
+                .then(status => {{
+                    // 成功時：待機時間をデフォルトにリセット
+                    currentDelay = defaultDelay;
+                    
+                    if (status === 'stopping') {{
+                        isPolling = false;
+                        window.location.href = '/exit';
+                    }} else if (status === 'changing' || status === 'starting' || status === 'running') {{
+                        // プレゼンテーション開始や状態変化時にリロード
+                        isPolling = false;
+                        window.location.href = '/';
+                    }} else {{
+                        // 継続してポーリング
+                        setTimeout(pollStatus, currentDelay);
+                    }}
+                }})
+                .catch(e => {{
+                    // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
+                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
+                    console.log('Waiting connection... (retry in ' + currentDelay + 'ms)');
+                    
+                    // 継続してポーリング
+                    setTimeout(pollStatus, currentDelay);
+                }});
+            }}
+            
+            // フォーム送信時にポーリングを停止して画面遷移の競合を防止
+            document.addEventListener('DOMContentLoaded', function() {{
+                var forms = document.querySelectorAll('form');
+                forms.forEach(function(form) {{
+                    form.addEventListener('submit', function() {{
+                        isPolling = false;
+                    }});
+                }});
+                
+                // ボタンクリック時も念のため停止
+                var buttons = document.querySelectorAll('.btn');
+                buttons.forEach(function(btn) {{
+                    btn.addEventListener('click', function() {{
+                        isPolling = false;
+                    }});
+                }});
+            }});
+            
+            // ポーリング開始
+            pollStatus();
+        }})();
+    </script>
+"@
+
+    # 処理中画面
+    ProcessingView = @"
+    <div style="margin-top:50px;"><div class="loader"></div><h2>Processing...</h2><p>Screen will refresh</p></div>
+    <script>
+        // エクスポネンシャル・バックオフを用いた状態確認ポーリング
+        (function() {{
+            var defaultDelay = 500;  // デフォルト待機時間（ミリ秒）
+            var currentDelay = defaultDelay;
+            var maxDelay = 5000;  // 最大待機時間（ミリ秒）
+            var backoffMultiplier = 1.5;  // バックオフ倍率
+            var checkCount = 0;
+            var maxRetries = 60; // 最大30秒待機（タイムアウト判定用）
+            var errorCount = 0;
+            var maxErrors = 40; // 接続エラー時は最大20秒待機
+            
+            function pollStatus() {{
+                fetch('/status?t=' + Date.now())
+                .then(r => r.text())
+                .then(status => {{
+                    // 成功時：待機時間をデフォルトにリセット
+                    currentDelay = defaultDelay;
+                    
+                    // running（発表中）またはwaiting（待機中）になったらリロード
+                    if (status === 'running' || (status === 'waiting' && checkCount > 2)) {{
+                        window.location.href = '/';
+                    }} else {{
+                        checkCount++;
+                        if (checkCount > maxRetries) {{
+                            // タイムアウト時は強制リロード
+                            window.location.href = '/';
+                        }} else {{
+                            // 継続してポーリング
+                            setTimeout(pollStatus, currentDelay);
+                        }}
+                    }}
+                }})
+                .catch(e => {{
+                    // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
+                    currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
+                    
+                    // 接続エラー時、プレゼンテーション起動を待って再試行
+                    checkCount++;
+                    errorCount++;
+                    if (errorCount > maxErrors || checkCount > maxRetries) {{
+                        window.location.href = '/';
+                    }} else {{
+                        // 継続してポーリング（バックオフした待機時間で）
+                        setTimeout(pollStatus, currentDelay);
+                    }}
+                }});
+            }}
+            
+            // ポーリング開始
+            pollStatus();
+        }})();
+    </script>
+</body></html>
+"@
+
+    # 終了画面
+    ExitView = @"
+    <div style="margin-top:50px;">
+        <div class="end-icon">✔</div>
+        <h1>System Shutdown</h1>
+        <p style="font-size:1.2rem; color:#fff;">Please close this tab<br>or window.</p>
+        <p style="color:#666; margin-top:20px;">Server has been shut down.</p>
+    </div>
+</body></html>
+"@
+}
+
 # ------------------------------------------------------------
 # 1. ユーティリティ関数
 # ------------------------------------------------------------
@@ -95,39 +376,7 @@ function Send-HttpResponse {
 # ------------------------------------------------------------
 function Get-HtmlHeader {
     param([string]$Title, [string]$BgColor="#1a1a1a")
-    return @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-    <title>$Title</title>
-    <style>
-        body { font-family: sans-serif; background: $BgColor; color: #fff; text-align: center; padding: 20px; margin: 0; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .card { background: #333; padding: 20px; border-radius: 15px; margin-bottom: 20px; }
-        h2 { color: #00d2ff; margin: 0 0 5px 0; font-size: 1.3rem; }
-        p { color: #ccc; font-size: 0.9rem; margin: 5px 0; }
-        .btn { display: block; width: 100%; padding: 16px; margin: 10px 0; font-size: 1.1rem; border: none; border-radius: 10px; cursor: pointer; color: white; font-weight: bold; }
-        .btn-start { background: linear-gradient(135deg, #007bff, #0056b3); font-size: 1.2rem; padding: 20px; }
-        .btn-stop  { background: linear-gradient(135deg, #dc3545, #a71d2a); font-size: 1.2rem; padding: 20px; box-shadow: 0 4px 10px rgba(220,53,69,0.4); }
-        .btn-next  { background: linear-gradient(135deg, #28a745, #218838); padding: 20px; font-size: 1.2rem; }
-        .btn-retry { background: linear-gradient(135deg, #ffc107, #e0a800); color: #000; }
-        .btn-list  { background: #17a2b8; }
-        .btn-exit  { background: #6c757d; opacity: 0.8; margin-top: 30px; }
-        .btn-file { background: #444; text-align: left; padding: 12px 15px; font-size: 1rem; margin: 5px 0; border-left: 5px solid #00d2ff; }
-        .btn-finished { background: #2a2a2a; border-left: 5px solid #6c757d; color: #aaa; }
-        .list-container { text-align: left; margin-top: 20px; max-height: 40vh; overflow-y: auto; }
-        .loader { border: 5px solid #333; border-top: 5px solid #00d2ff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
-        .playing-icon { font-size: 3rem; color: #28a745; margin: 10px; animation: pulse 2s infinite; }
-        .end-icon { font-size: 4rem; color: #dc3545; margin: 20px 0; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.1); opacity: 0.8; } 100% { transform: scale(1); opacity: 1; } }
-    </style>
-</head>
-<body>
-    <div class="container">
-"@
+    return $script:HtmlTemplates.HtmlHeader -f $Title, $BgColor
 }
 
 # ------------------------------------------------------------
@@ -148,40 +397,7 @@ function Watch-RunningPresentation {
     }
 
     $head = Get-HtmlHeader -Title "Now Playing" -BgColor "#000000"
-    $bodyHtml = @"
-    <div class="card" style="border: 1px solid #28a745;">
-        <div class="playing-icon">▶</div>
-        <h2>Now Presenting</h2>
-        <p style="font-weight:bold; color:#fff;">$($TargetFileItem.Name)</p>
-        <p>Controlling slides on PC...</p>
-    </div>
-    <form method="post" action="/stop">
-        <button class="btn btn-stop">■ Stop Presentation</button>
-    </form>
-    
-    <script>
-        // 定期的に状態を確認し、発表が終わっていたらリロードする
-        setInterval(function(){
-            // キャッシュ対策で時刻を付与
-            fetch('/status?t=' + Date.now())
-            .then(response => {
-                if (response.ok) { return response.text(); }
-                throw new Error('Network error');
-            })
-            .then(text => {
-                // サーバーから 'running' 以外（waiting/stoppingなど）が返ってきたら画面遷移(リロード)
-                if (text !== 'running') {
-                    window.location.reload();
-                }
-            })
-            .catch(error => {
-                // サーバー停止/切り替え時もリロードを試みる
-                setTimeout(() => window.location.reload(), 1000);
-            });
-        }, 1500);
-    </script>
-</div></body></html>
-"@
+    $bodyHtml = $script:HtmlTemplates.NowPlayingView -f $TargetFileItem.Name
     $fullHtml = $head + $bodyHtml
 
     $status = "NormalEnd"
@@ -383,116 +599,21 @@ function Get-UserAction {
         }
         $listHtml += "</div>"
 
-        $bodyContent = @"
-        <div class="card"><h2>Select Slide</h2><p>Select from list or press Start</p></div>
-        <form method="post" action="/start"><button class="btn btn-start" $stBtn>Start: $nextTxt</button></form>
-        $listHtml
-        <form method="post" action="/exit"><button class="btn btn-exit">Exit System</button></form>
-"@
+        $bodyContent = $script:HtmlTemplates.LobbyView -f $stBtn, $nextTxt, $listHtml
     } else {
         $nxtLbl = if ($NextFileName) { "Start Next Slide<br><span style='font-size:0.8rem;font-weight:normal'>$NextFileName</span>" } else { "No slides in queue" }
         $nxtSt = if ($NextFileName) { "" } else { "disabled style='opacity:0.5;'" }
 
-        $bodyContent = @"
-        <div class="card"><h2>Presentation Ended</h2><p>$CurrentFileName</p></div>
-        <form method="post" action="/next"><button class="btn btn-next" $nxtSt>$nxtLbl</button></form>
-        <form method="post" action="/retry"><button class="btn btn-retry">Play Again</button></form>
-        <form method="post" action="/lobby"><button class="btn btn-list">Back to List</button></form>
-        <form method="post" action="/exit"><button class="btn btn-exit">Exit All</button></form>
-"@
+        $bodyContent = $script:HtmlTemplates.DialogView -f $CurrentFileName, $nxtSt, $nxtLbl
     }
     
-    # ポーリング用スクリプト
-    $pollingScript = @"
-    <script>
-        // ポーリングタイマーを変数に格納して制御可能にする
-        var pollingTimer = setInterval(function(){
-            fetch('/status?t=' + Date.now())
-            .then(r => r.text())
-            .then(status => {
-                if (status === 'stopping') {
-                    clearInterval(pollingTimer);
-                    window.location.href = '/exit';
-                } else if (status === 'changing' || status === 'starting' || status === 'running') {
-                    // プレゼンテーション開始や状態変化時にリロード
-                    // running も検知対象に追加（changing を取り逃がした場合の対処）
-                    clearInterval(pollingTimer);
-                    window.location.href = '/';
-                }
-            })
-            .catch(e => console.log('Waiting connection...'));
-        }, 300);  // 300msごとにチェック（800ms待機時間内に確実に検知）
-        
-        // フォーム送信時にポーリングを停止して画面遷移の競合を防止
-        document.addEventListener('DOMContentLoaded', function() {
-            var forms = document.querySelectorAll('form');
-            forms.forEach(function(form) {
-                form.addEventListener('submit', function() {
-                    clearInterval(pollingTimer);
-                });
-            });
-            
-            // ボタンクリック時も念のため停止
-            var buttons = document.querySelectorAll('.btn');
-            buttons.forEach(function(btn) {
-                btn.addEventListener('click', function() {
-                    clearInterval(pollingTimer);
-                });
-            });
-        });
-    </script>
-"@
-
-    $mainHtml = $head + $bodyContent + $pollingScript + "</div></body></html>"
+    # 完全なHTMLページを構築
+    $mainHtml = $head + $bodyContent + $script:HtmlTemplates.PollingScript + "</div></body></html>"
 
     # --- 画面状態のHTML ---
-    $processingHtml = $head + @"
-    <div style="margin-top:50px;"><div class="loader"></div><h2>Processing...</h2><p>Screen will refresh</p></div>
-    <script>
-        var checkCount = 0;
-        var maxRetries = 60; // 最大30秒待機（500ms * 60）
-        var errorCount = 0;
-        var maxErrors = 40; // 接続エラー時は最大20秒待機（500ms * 40）
-        var checkInterval = setInterval(function(){
-            fetch('/status?t=' + Date.now())
-            .then(r => r.text())
-            .then(status => {
-                // running（発表中）またはwaiting（待機中）になったらリロード
-                if (status === 'running' || (status === 'waiting' && checkCount > 2)) {
-                    clearInterval(checkInterval);
-                    window.location.href = '/';
-                } else {
-                    checkCount++;
-                    if (checkCount > maxRetries) {
-                        // タイムアウト時は強制リロード
-                        clearInterval(checkInterval);
-                        window.location.href = '/';
-                    }
-                }
-            })
-            .catch(e => {
-                // 接続エラー時、プレゼンテーション起動を待って再試行
-                checkCount++;
-                errorCount++;
-                if (errorCount > maxErrors || checkCount > maxRetries) {
-                    clearInterval(checkInterval);
-                    window.location.href = '/';
-                }
-            });
-        }, 500);
-    </script>
-</body></html>
-"@
+    $processingHtml = $head + $script:HtmlTemplates.ProcessingView
     
-    $exitHtml = $head + @"
-    <div style="margin-top:50px;">
-        <div class="end-icon">✔</div>
-        <h1>System Shutdown</h1>
-        <p style="font-size:1.2rem; color:#fff;">Please close this tab<br>or window.</p>
-        <p style="color:#666; margin-top:20px;">Server has been shut down.</p>
-    </div>
-</body></html>
-"@
+    $exitHtml = $head + $script:HtmlTemplates.ExitView
 
     $resultAction = $null
     $resultFile = $null
@@ -664,6 +785,9 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     exit
 }
 
+# コンソールの「閉じる」ボタンを無効化（誤操作防止）
+[ConsoleWindow]::DisableCloseButton()
+
 if (-not (Test-Path $TargetFolderPath)) { Write-Error "Target Folder Not Found"; exit }
 $finishFolderPath = Join-Path $TargetFolderPath $FinishFolderName
 if (-not (Test-Path $finishFolderPath)) { New-Item -Path $finishFolderPath -ItemType Directory | Out-Null }
@@ -729,10 +853,6 @@ try {
                 Write-Host " >> Manually stopped." -ForegroundColor Yellow
                 try { $presentation.Close() } catch {}
             }
-            
-            # オブジェクト破棄
-            $presentation = $null
-            [GC]::Collect()
 
             # --- C. 移動判定 ---
             if ($targetFileItem.DirectoryName -ne $finishFolderPath) {
@@ -766,10 +886,28 @@ try {
             Write-Error "Error: $($_.Exception.Message)"
             if ($presentation) { try { $presentation.Close() } catch {} }
             Start-Sleep 2
+        } finally {
+            # COMオブジェクトの確実なクリーンアップ
+            if ($presentation) {
+                try { $presentation.Close() } catch {}
+                Release-ComObject -obj $presentation
+                $presentation = $null
+            }
+            # ガベージコレクションを強制実行してCOM参照を完全に解放
+            [System.GC]::Collect()
+            [System.GC]::WaitForPendingFinalizers()
         }
     }
 
 } finally {
-    if ($pptApp) { try { $pptApp.Quit() } catch {}; Release-ComObject $pptApp }
+    # PowerPointアプリケーション全体の終了処理
+    if ($pptApp) { 
+        try { $pptApp.Quit() } catch {}
+        Release-ComObject -obj $pptApp
+        $pptApp = $null
+    }
+    # ガベージコレクションを強制実行してPOWERPNT.EXEプロセスを確実に終了
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
     Write-Host "System terminated." -ForegroundColor Red
 }
