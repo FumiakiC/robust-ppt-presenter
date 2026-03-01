@@ -125,9 +125,10 @@ $script:HtmlTemplates = @{
                 .catch(error => {{
                     // エラー時：待機時間を増やす（エクスポネンシャル・バックオフ）
                     currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelay);
+                    console.log('Waiting connection... (retry in ' + currentDelay + 'ms)');
                     
-                    // サーバー停止/切り替え時もリロードを試みる
-                    setTimeout(() => window.location.reload(), 1000);
+                    // 継続してポーリング
+                    setTimeout(pollStatus, currentDelay);
                 }});
             }}
             
