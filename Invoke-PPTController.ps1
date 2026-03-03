@@ -613,20 +613,74 @@ function Send-HttpResponse {
     }
 }
 
-# 安全にGetContextAsyncを呼び出すヘルパー関数 (Req 3)
+# 安全にGetContextAsyncを呼び出すヘルパー関数 (Req 3, 4)
 function Get-SafeContextAsync {
     param([System.Net.HttpListener]$Listener)
-    $maxRetries = 10
-    for ($i = 0; $i -lt $maxRetries; $i++) {
+    # リスナーが稼働している限りリトライを継続し、Web操作のデッドロックを防止する
+    while ($true) {
+        # リスナーが停止/破棄済みなら即座に諦める
+        try {
+            if (-not $Listener.IsListening) {
+                return $null
+            }
+        } catch [System.ObjectDisposedException] {
+            return $null
+        }
         try {
             return $Listener.GetContextAsync()
+        } catch [System.ObjectDisposedException] {
+            # リスナー自体が破棄済み → 復旧不可能
+            return $null
         } catch {
-            Write-Host " [Warning] GetContextAsync failed, retrying ($($i+1)/$maxRetries)... $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host " [Warning] GetContextAsync failed, retrying... $($_.Exception.Message)" -ForegroundColor Yellow
             Start-Sleep -Milliseconds 500
         }
     }
-    Write-Host " [Error] GetContextAsync failed after $maxRetries retries." -ForegroundColor Red
-    return $null
+}
+
+# ==============================================================================
+# 認証ヘルパー関数 (DRY: Req 1)
+# ==============================================================================
+function Test-IsAuthenticated {
+    param([System.Net.HttpListenerRequest]$Request)
+    if ($Request.Cookies["SessionToken"]) {
+        return ($Request.Cookies["SessionToken"].Value -eq $script:SessionToken)
+    }
+    return $false
+}
+
+# /auth POST リクエストを処理する共通関数。認証成功時 $true、失敗時 $false を返す。
+function Invoke-AuthHandler {
+    param(
+        [System.Net.HttpListenerRequest]$Request,
+        [System.Net.HttpListenerResponse]$Response,
+        [string]$Body
+    )
+    # レートリミット：認証失敗後1秒以内のリクエストを即座にエラーで返す
+    $currentTime = Get-Date
+    if ($currentTime -lt $script:LastAuthFailedTime.AddSeconds(1)) {
+        $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
+        Send-HttpResponse -Response $Response -Content $authHtml
+        return $false
+    }
+    if ($Body) {
+        if ([System.Web.HttpUtility]::UrlDecode($Body) -match "pin=([0-9]{6})") {
+            $submittedPin = $matches[1]
+            if ($submittedPin -eq $script:AuthPin.ToString()) {
+                # 認証成功：Cookieをセットしてリダイレクト
+                $Response.Headers.Add("Set-Cookie", "SessionToken=$script:SessionToken; HttpOnly; Path=/; SameSite=Strict")
+                $Response.StatusCode = 302
+                $Response.Headers.Add("Location", "/")
+                Send-HttpResponse -Response $Response -Content ""
+                return $true
+            }
+        }
+    }
+    # 認証失敗：エラー表示
+    $script:LastAuthFailedTime = Get-Date
+    $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
+    Send-HttpResponse -Response $Response -Content $authHtml
+    return $false
 }
 
 # ============================================================================== 
@@ -670,18 +724,25 @@ function Watch-RunningPresentation {
                 $res = $context.Response
                 $path = $req.Url.LocalPath.ToLower()
 
-                # 認証ミドルウェア：Cookie確認 (Req 6)
-                $isAuthenticated = $false
-                if ($req.Cookies["SessionToken"]) {
-                    if ($req.Cookies["SessionToken"].Value -eq $script:SessionToken) {
-                        $isAuthenticated = $true
-                    }
-                }
+                # 認証ミドルウェア：Cookie確認 (共通関数使用)
+                $isAuthenticated = Test-IsAuthenticated -Request $req
 
-                # /status以外は認証必須
-                if (-not $isAuthenticated -and $path -ne "/status") {
+                # /status と /auth 以外は認証必須
+                if (-not $isAuthenticated -and $path -ne "/status" -and $path -ne "/auth") {
                     $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", ""
                     Send-HttpResponse -Response $res -Content $authHtml
+                    $script:ContextTask = Get-SafeContextAsync -Listener $Listener
+                    continue
+                }
+
+                # /auth POSTリクエスト処理（プレゼン中でもログイン可能にする）
+                if ($path -eq "/auth" -and $req.HttpMethod -eq "POST") {
+                    $authBody = $null
+                    if ($req.HasEntityBody) {
+                        $sr = New-Object System.IO.StreamReader($req.InputStream, $req.ContentEncoding)
+                        $authBody = $sr.ReadToEnd(); $sr.Close()
+                    }
+                    Invoke-AuthHandler -Request $req -Response $res -Body $authBody | Out-Null
                     $script:ContextTask = Get-SafeContextAsync -Listener $Listener
                     continue
                 }
@@ -721,15 +782,24 @@ function Watch-RunningPresentation {
                     }
                 }
             } catch {
-                $errMsg = $_.Exception.Message
-                if ($errMsg -match '0x80010001|0x800A175D|enumerat|modified|変更されました') {
+                # HResult ベースの判定で OS 言語に依存しない堅牢なエラー分類
+                $hr = $_.Exception.HResult
+                if (-not $hr -and $_.Exception.InnerException) {
+                    $hr = $_.Exception.InnerException.HResult
+                }
+                # 0x80010001 (RPC_E_CALL_REJECTED) / 0x800A175D (PPT busy/enum error)
+                $transientHResults = @(
+                    [int]0x80010001,  # RPC_E_CALL_REJECTED
+                    [int]0x800A175D   # PowerPoint enumeration error
+                )
+                if ($hr -and ($transientHResults -contains $hr)) {
                     # ダイアログ表示中等の一時的なCOMエラー → まだ開いていると判定
                     $stillOpen = $true
-                    Write-Host " [Warning] COM transient error (presentation assumed still open): $errMsg" -ForegroundColor Yellow
+                    Write-Host " [Warning] COM transient error (HResult: 0x$($hr.ToString('X8')), presentation assumed still open)" -ForegroundColor Yellow
                 } else {
                     # プロセス完全終了等の致命的エラー
                     $stillOpen = $false
-                    Write-Host " [Warning] COM fatal error (presentation assumed closed): $errMsg" -ForegroundColor Yellow
+                    Write-Host " [Warning] COM fatal error (HResult: $(if($hr){'0x'+$hr.ToString('X8')}else{'N/A'}), presentation assumed closed): $($_.Exception.Message)" -ForegroundColor Yellow
                 }
             }
             
@@ -935,13 +1005,8 @@ function Get-UserAction {
             $res = $context.Response
             $url = $req.Url.LocalPath.ToLower()
             
-            # --- 認証ミドルウェア：Cookie確認 ---
-            $isAuthenticated = $false
-            if ($req.Cookies["SessionToken"]) {
-                if ($req.Cookies["SessionToken"].Value -eq $script:SessionToken) {
-                    $isAuthenticated = $true
-                }
-            }
+            # --- 認証ミドルウェア：Cookie確認（共通関数使用） ---
+            $isAuthenticated = Test-IsAuthenticated -Request $req
             
             # 認証が必要なパス（/authと/statusは除外）
             if (-not $isAuthenticated -and $url -ne "/auth" -and $url -ne "/status") {
@@ -958,36 +1023,9 @@ function Get-UserAction {
                 $body = $r.ReadToEnd(); $r.Close()
             }
             
-            # /auth POSTリクエスト処理
+            # /auth POSTリクエスト処理（共通関数使用）
             if ($url -eq "/auth" -and $req.HttpMethod -eq "POST") {
-                # レートリミット処理：認証失敗後1秒以内のリクエストを即座にエラーで返す
-                $currentTime = Get-Date
-                if ($currentTime -lt $script:LastAuthFailedTime.AddSeconds(1)) {
-                    $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
-                    Send-HttpResponse -Response $res -Content $authHtml
-                    $script:ContextTask = Get-SafeContextAsync -Listener $Listener
-                    continue
-                }
-                
-                if ($body) {
-                    
-                    if ([System.Web.HttpUtility]::UrlDecode($body) -match "pin=([0-9]{6})") {
-                        $submittedPin = $matches[1]
-                        if ($submittedPin -eq $script:AuthPin.ToString()) {
-                            # 認証成功：Cookieをセットしてリダイレクト
-                            $res.Headers.Add("Set-Cookie", "SessionToken=$script:SessionToken; HttpOnly; Path=/; SameSite=Strict")
-                            $res.StatusCode = 302
-                            $res.Headers.Add("Location", "/")
-                            Send-HttpResponse -Response $res -Content ""
-                            $script:ContextTask = Get-SafeContextAsync -Listener $Listener
-                            continue
-                        }
-                    }
-                }
-                # 認証失敗：エラー表示
-                $script:LastAuthFailedTime = Get-Date
-                $authHtml = $script:HtmlTemplates.AuthView -f "#0f2027", "error"
-                Send-HttpResponse -Response $res -Content $authHtml
+                Invoke-AuthHandler -Request $req -Response $res -Body $body | Out-Null
                 $script:ContextTask = Get-SafeContextAsync -Listener $Listener
                 continue
             }
@@ -1249,7 +1287,7 @@ try {
             $null = $pptApp.Version
         } catch {
             Write-Host " [Warning] PowerPoint COM object is dead. Attempting recovery..." -ForegroundColor Yellow
-            try { Release-ComObject -obj $pptApp } catch {}
+            Release-ComObject -obj $pptApp
             $pptApp = $null
             [System.GC]::Collect()
             [System.GC]::WaitForPendingFinalizers()
